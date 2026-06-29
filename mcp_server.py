@@ -1,5 +1,6 @@
 import uvicorn
 from fastapi import FastAPI
+from starlette.middleware.base import BaseHTTPMiddleware
 import json
 
 from mcp.server.fastmcp import FastMCP
@@ -7,13 +8,12 @@ from mcp.server.transport_security import TransportSecuritySettings
 from safehomes_ocr import RegistryParser
 from public_data_api import PublicDataFetcher
 
-# FastMCP 서버 초기화 (Kakao PlayMCP 규격)
+# FastMCP 서버 초기화
 mcp = FastMCP("safehomes", host="0.0.0.0", transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
 
 ocr_parser = RegistryParser()
 public_fetcher = PublicDataFetcher()
 
-# Kakao PlayMCP 규격에 맞춰 어노테이션(annotations) 필수 입력
 @mcp.tool(
     annotations={
         "title": "세이프홈즈 부동산 위험 진단",
@@ -24,7 +24,7 @@ public_fetcher = PublicDataFetcher()
     }
 )
 async def analyze_real_estate_safety(ocr_text: str, address: str, deposit: int) -> str:
-    """세이프홈즈(SafeHomes) 전월세 안전 진단 비서입니다. 등기부등본 및 계약서의 OCR 텍스트와 보증금을 기반으로 공공데이터를 조회하여 위험을 분석합니다."""
+    """safehomes(세이프홈즈) 전월세 안전 진단 비서입니다. 등기부등본 및 계약서의 OCR 텍스트와 보증금을 기반으로 공공데이터를 조회하여 위험을 분석합니다."""
     ocr_result = ocr_parser.analyze_ocr_text(ocr_text)
     ledger_result = public_fetcher.check_building_ledger(address)
     price_result = public_fetcher.get_market_price_risk(address, deposit)
@@ -43,10 +43,17 @@ async def analyze_real_estate_safety(ocr_text: str, address: str, deposit: int) 
 
 from fastapi.middleware.cors import CORSMiddleware
 
-# 기본 FastAPI 서버 생성
 app = FastAPI(title="SafeHomes MCP Server")
 
-# 웹 브라우저 기반의 PlayMCP UI가 접속할 수 있도록 CORS 전면 허용
+# 슬래시 자동 리다이렉트(307) 방지 미들웨어 (브라우저 CORS Preflight OPTIONS 요청 보호)
+class TrailingSlashMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if request.scope["path"] == "/mcp/messages":
+            request.scope["path"] = "/mcp/messages/"
+        return await call_next(request)
+
+app.add_middleware(TrailingSlashMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -55,12 +62,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 카카오클라우드 헬스체크용(생존체크) 기본 라우트엔드포인트
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "SafeHomes MCP Server is running."}
+    return {"status": "ok"}
 
-# FastMCP의 sse_app은 독립적인 앱이므로 자체적으로 CORS를 씌워주어야 합니다!
 sse_asgi_app = CORSMiddleware(
     app=mcp.sse_app(),
     allow_origins=["*"],
@@ -69,8 +74,8 @@ sse_asgi_app = CORSMiddleware(
     allow_headers=["*"],
 )
 
-# FastMCP의 SSE 엔드포인트를 /mcp 경로에 마운트 (PlayMCP 가이드 권장 경로)
 app.mount("/mcp", sse_asgi_app)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
+
