@@ -2,33 +2,34 @@ import uvicorn
 from fastapi import FastAPI
 import json
 
-# MCP 공식 SDK 임포트
-from mcp.server.fastapi import create_mcp_server
-from mcp.server import Server
-
+from mcp.server.fastmcp import FastMCP
 from safehomes_ocr import RegistryParser
 from public_data_api import PublicDataFetcher
 
-# FastAPI 앱 및 MCP 서버 초기화
-app = FastAPI(title="SafeHomes MCP Server")
-mcp = Server("safehomes")
+# FastMCP 서버 초기화 (Kakao PlayMCP 규격)
+mcp = FastMCP("safehomes")
 
 ocr_parser = RegistryParser()
 public_fetcher = PublicDataFetcher()
 
-@mcp.tool()
+# Kakao PlayMCP 규격에 맞춰 어노테이션(annotations) 필수 입력
+@mcp.tool(
+    annotations={
+        "title": "세이프홈즈 부동산 위험 진단",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
 async def analyze_real_estate_safety(ocr_text: str, address: str, deposit: int) -> str:
     """
-    등기부등본 OCR 텍스트, 주소, 보증금을 입력받아 전월세 사기 위험도(위반건축물, 깡통전세 등)를 종합 분석합니다.
+    세이프홈즈(SafeHomes) 전월세 안전 진단 비서입니다. 등기부등본 및 계약서의 OCR 텍스트와 보증금을 기반으로 공공데이터를 조회하여 위험을 분석합니다.
     """
-    # 1. OCR 텍스트 기반 등기부/계약서 분석
     ocr_result = ocr_parser.analyze_ocr_text(ocr_text)
-    
-    # 2. 공공데이터 기반 위반건축물 및 깡통전세 분석
     ledger_result = public_fetcher.check_building_ledger(address)
     price_result = public_fetcher.get_market_price_risk(address, deposit)
     
-    # 종합 리포트 생성
     is_totally_safe = ocr_result["is_safe"] and not ledger_result["is_illegal_building"] and not price_result["is_kangtong_risk"]
     
     final_report = {
@@ -41,14 +42,16 @@ async def analyze_real_estate_safety(ocr_text: str, address: str, deposit: int) 
     
     return json.dumps(final_report, ensure_ascii=False)
 
-# FastAPI 앱에 MCP 서버를 마운트하여 /mcp 경로(SSE 통신)를 열어줍니다.
-mcp_app = create_mcp_server(mcp)
-app.mount("/mcp", mcp_app)
+# 메인 FastAPI 앱 설정
+app = FastAPI(title="SafeHomes MCP Server")
 
 # 카카오클라우드 로드밸런서(헬스체크)용 기본 엔드포인트
 @app.get("/")
 def health_check():
     return {"status": "ok", "message": "SafeHomes MCP Server is running."}
+
+# FastMCP의 SSE 앱을 /mcp 경로에 마운트
+app.mount("/mcp", mcp.sse_app())
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
