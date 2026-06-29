@@ -43,10 +43,21 @@ async def analyze_real_estate_safety(ocr_text: str, address: str, deposit: int) 
     
     return json.dumps(final_report, ensure_ascii=False)
 
-# 메인 FastAPI 앱 설정
+from fastapi.middleware.cors import CORSMiddleware
+
+# 기본 FastAPI 서버 생성
 app = FastAPI(title="SafeHomes MCP Server")
 
-# 카카오클라우드 로드밸런서(헬스체크)용 기본 엔드포인트
+# 웹 브라우저 기반의 PlayMCP UI가 접속할 수 있도록 CORS 전면 허용
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 카카오클라우드 헬스체크용(생존체크) 기본 라우트엔드포인트
 @app.get("/")
 def health_check():
     return {"status": "ok", "message": "SafeHomes MCP Server is running."}
