@@ -24,9 +24,7 @@ public_fetcher = PublicDataFetcher()
     }
 )
 async def analyze_real_estate_safety(ocr_text: str, address: str, deposit: int) -> str:
-    """
-    세이프홈즈(SafeHomes) 전월세 안전 진단 비서입니다. 등기부등본 및 계약서의 OCR 텍스트와 보증금을 기반으로 공공데이터를 조회하여 위험을 분석합니다.
-    """
+    """세이프홈즈(SafeHomes) 전월세 안전 진단 비서입니다. 등기부등본 및 계약서의 OCR 텍스트와 보증금을 기반으로 공공데이터를 조회하여 위험을 분석합니다."""
     ocr_result = ocr_parser.analyze_ocr_text(ocr_text)
     ledger_result = public_fetcher.check_building_ledger(address)
     price_result = public_fetcher.get_market_price_risk(address, deposit)
