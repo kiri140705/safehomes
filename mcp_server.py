@@ -7,7 +7,7 @@ from safehomes_ocr import RegistryParser
 from public_data_api import PublicDataFetcher
 
 # FastMCP 서버 초기화 (Kakao PlayMCP 규격)
-mcp = FastMCP("safehomes")
+mcp = FastMCP("safehomes", host="0.0.0.0")
 
 ocr_parser = RegistryParser()
 public_fetcher = PublicDataFetcher()
