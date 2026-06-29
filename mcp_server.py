@@ -62,8 +62,17 @@ app.add_middleware(
 def health_check():
     return {"status": "ok", "message": "SafeHomes MCP Server is running."}
 
-# FastMCP의 SSE 앱을 /mcp 경로에 마운트
-app.mount("/mcp", mcp.sse_app())
+# FastMCP의 sse_app은 독립적인 앱이므로 자체적으로 CORS를 씌워주어야 합니다!
+sse_asgi_app = CORSMiddleware(
+    app=mcp.sse_app(),
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# FastMCP의 SSE 엔드포인트를 /mcp 경로에 마운트
+app.mount("/mcp", sse_asgi_app)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
