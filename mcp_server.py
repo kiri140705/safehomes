@@ -71,8 +71,8 @@ sse_asgi_app = CORSMiddleware(
     allow_headers=["*"],
 )
 
-# FastMCP의 SSE 엔드포인트를 루트(/) 경로에 마운트 (PlayMCP 표준 경로 호환성 확보)
-app.mount("/", sse_asgi_app)
+# FastMCP의 SSE 엔드포인트를 /mcp 경로에 마운트 (PlayMCP 가이드 권장 경로)
+app.mount("/mcp", sse_asgi_app)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
