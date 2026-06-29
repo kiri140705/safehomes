@@ -4,3 +4,4 @@ pydantic==2.6.4
 requests==2.31.0
 beautifulsoup4==4.12.3
 mcp
+sse-starlette
