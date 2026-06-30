@@ -184,8 +184,24 @@ def analyze_real_estate_safety(
         "negotiation_message": negotiation_message,
         "public_housing_alternatives": public_housing_alternatives,
         "dispute_resolution_guide": dispute_resolution_guide,
-        "system_instruction_for_llm": "AI 봇에게 알림: 1. 제공된 매매가/보증금을 바탕으로 최신 부동산 정부 정책(LTV 한도, 전세대출)을 적용해 '예상 대출 가능 금액'을 계산하세요. 2. 해당 매물 종류와 매매가를 바탕으로 최신 대한민국 세법을 웹 검색 또는 최신 지식으로 확인하여, 유저가 납부해야 할 '예상 세금(취득세, 재산세, 종합부동산세 등)'을 추가로 계산하여 브리핑해 주세요. 단, '다주택자 여부 및 최신 세법 개정에 따라 실제 세금은 달라질 수 있습니다'라고 경고하세요."
     }
+
+    # ==========================================
+    # 상권 분석 및 공익 리포트 추가 (Phase 3)
+    # ==========================================
+    if property_type in ["상가", "빌딩/통상가", "숙박업(호텔/펜션)"] and business_type:
+        commercial_data = public_fetcher.analyze_commercial_area(address, business_type)
+        final_report["commercial_area_analysis"] = (
+            f"📊 [AI 상권 분석 (자영업자 공익 보호 시스템)]\n"
+            f"- 데이터 출처: {commercial_data['data_source']}\n"
+            f"- 타겟 유동인구: {commercial_data['target_demographic']}\n"
+            f"- 반경 500m 내 경쟁점포: {commercial_data['competitors_count']}개\n"
+            f"- 동종업계 추정 폐업률: {commercial_data['closure_rate']}\n"
+            f"- 동종업계 월평균 매출: {commercial_data['avg_monthly_sales']}\n"
+            f"💡 [AI 조언] 계약상 법적 위험이 없더라도, 경쟁 점포 수와 폐업률을 반드시 고려하여 신중히 창업을 결정하시기 바랍니다."
+        )
+
+    final_report["system_instruction_for_llm"] = "AI 봇에게 알림: 1. 제공된 매매가/보증금을 바탕으로 최신 부동산 정부 정책(LTV 한도, 전세대출)을 적용해 '예상 대출 가능 금액'을 계산하세요. 2. 해당 매물 종류와 매매가를 바탕으로 최신 대한민국 세법을 웹 검색 또는 최신 지식으로 확인하여, 유저가 납부해야 할 '예상 세금(취득세, 재산세, 종합부동산세 등)'을 추가로 계산하여 브리핑해 주세요. 단, '다주택자 여부 및 최신 세법 개정에 따라 실제 세금은 달라질 수 있습니다'라고 경고하세요. 3. 상권 분석 데이터(commercial_area_analysis)가 존재할 경우, 자영업자를 진심으로 걱정하고 돕는 따뜻한 컨설턴트의 톤으로 해당 매출/폐업률 데이터를 유저에게 분석해 주세요."
     
     return json.dumps(final_report, ensure_ascii=False)
 
