@@ -7,9 +7,14 @@ from pydantic import Field
 from typing import Annotated
 from safehomes_ocr import RegistryParser
 from public_data_api import PublicDataFetcher
+from mcp.server.transport_security import TransportSecuritySettings
 
 # Initialize the FastMCP Server
-mcp = FastMCP("safehomes")
+mcp = FastMCP(
+    "safehomes",
+    stateless_http=True,
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
+)
 ocr_parser = RegistryParser()
 public_fetcher = PublicDataFetcher()
 
