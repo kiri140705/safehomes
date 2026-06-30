@@ -38,8 +38,44 @@ def analyze_real_estate_safety(
     current_status: Annotated[str, Field(description="현재 진행 상태 ('계약 전', '계약 중', '사고 발생/분쟁' 중 택1)")] = "계약 전",
     monthly_rent: Annotated[int, Field(description="월세 금액 (단위: 만원)")] = 0,
     business_type: Annotated[str, Field(description="상가/지산일 경우 희망 업종 (유저가 입력하지 않았다면 '일반업종'으로 추출할 것)")] = "",
+    intent: Annotated[str, Field(description="유저의 질의 의도 ('사기 방어 및 계약 분석', '거시경제 및 집값 동향', '청약 및 가점 전략' 중 가장 적합한 것을 스스로 판단하여 선택)")] = "사기 방어 및 계약 분석",
+    subscription_points: Annotated[int, Field(description="유저의 청약 가점 (무주택, 부양가족, 통장가입기간 기반 0~84점. 모르면 0)")] = 0,
+    dependents: Annotated[int, Field(description="유저의 부양가족 수 (자녀 등, 모르면 0)")] = 0,
 ) -> str:
-    # 1. OCR 및 공공데이터 스캔
+    # 0. 인텐트 동적 라우팅 (거시경제 / 청약 / 사기 방어)
+    if intent == "거시경제 및 집값 동향":
+        macro_report = public_fetcher.get_macro_real_estate_stats(address)
+        return json.dumps({
+            "status": "INFO",
+            "diagnostic_summary": macro_report,
+            "market_price_analysis": "해당 모드 생략",
+            "building_ledger_analysis": "해당 모드 생략",
+            "brokerage_fee_limit": "",
+            "recommended_safe_clauses": [],
+            "field_inspection_checklist": [],
+            "negotiation_message": "",
+            "public_housing_alternatives": [],
+            "dispute_resolution_guide": []
+        }, ensure_ascii=False)
+        
+    if intent == "청약 및 가점 전략":
+        applyhome_report = public_fetcher.get_applyhome_subscription_info(address, deposit, subscription_points, dependents)
+        if not applyhome_report:
+            applyhome_report = "해당 자본/가점 조건으로 조회 가능한 최적의 청약 정보가 없습니다."
+        return json.dumps({
+            "status": "INFO",
+            "diagnostic_summary": applyhome_report,
+            "market_price_analysis": "해당 모드 생략",
+            "building_ledger_analysis": "해당 모드 생략",
+            "brokerage_fee_limit": "",
+            "recommended_safe_clauses": [],
+            "field_inspection_checklist": [],
+            "negotiation_message": "",
+            "public_housing_alternatives": [],
+            "dispute_resolution_guide": []
+        }, ensure_ascii=False)
+
+    # 1. 기존 사기 방어 및 계약 분석 모드
     ocr_result = ocr_parser.analyze_ocr_text(ocr_text, contract_type, property_type)
     ledger_result = public_fetcher.check_building_ledger(address, property_type, business_type)
     flood_result = public_fetcher.check_flood_risk(address)
@@ -59,7 +95,12 @@ def analyze_real_estate_safety(
     # 모드 1: 탐색 및 공격 (대안 추천)
     # ==========================================
     if is_danger or price_result["is_kangtong_risk"]:
-        public_housing_alternatives = public_fetcher.get_public_housing_alternatives(property_type, deposit, is_danger)
+        public_housing_alternatives = public_fetcher.get_public_housing_alternatives(property_type, deposit, address, is_danger)
+    else:
+        # 안전한 매물이라도 청약 스나이퍼 라우팅은 백그라운드로 작동시킴
+        applyhome_msg = public_fetcher.get_applyhome_subscription_info(address, deposit, subscription_points, dependents)
+        if applyhome_msg:
+            public_housing_alternatives.append(applyhome_msg)
 
     # ==========================================
     # 모드 2: 사후 구제 및 분쟁 해결 (Rescue)
@@ -190,6 +231,11 @@ def analyze_real_estate_safety(
         field_inspection_checklist.extend(INSPECTION_MATRIX[checklist_key])
         dispute_resolution_guide.append(public_fetcher.get_legal_precedent(property_type))
         
+        # [세금 방어 특약 및 임장/서류 검증 강제 추가]
+        if contract_type in ["전세", "월세"]:
+            dispute_resolution_guide.append("👉 [극비 특약]: 본 계약은 임대인의 국세, 지방세 및 건강보험료 완납을 전제로 하며, 잔금일 기준 미납/체납 사실이 확인될 경우 임차인은 위약금 없이 즉각 계약을 해제할 수 있고 임대인은 수령한 계약금 전액을 즉시 반환한다.")
+            field_inspection_checklist.append("⚠️ [임대인 체납 검증 팩트폭행]: 중개사에게 '잔금일 전까지 임대인의 국세/지방세 납세증명서 및 건강보험료 완납증명서를 반드시 발급받아 첨부해달라'고 단호하게 요구하십시오. 이를 거부하거나 개인정보 운운하며 핑계를 대는 임대인은 100% 체납 깡통전세업자이므로 즉각 계약을 파기하십시오.")
+        
         # 기본 협상 메시지 추가
         if contract_type in ["전세", "월세"] and property_type not in ["상가", "지식산업센터", "숙박업(호텔/펜션)"]:
             negotiation_message += "- 잔금일 익일 자정까지 권리변동 없음 (위반 시 배액배상)\n- HUG 보증보험 불가 시 계약금 즉시 반환\n"
@@ -245,6 +291,7 @@ def analyze_real_estate_safety(
         "   - [4. 🛡️ 방어용 강력 특약]: 유저가 생각할 필요 없이, 계약서에 토씨 하나 안 틀리고 그대로 베껴 적을 수 있는 완벽한 문장으로 3개 이상 길게 제시. (JSON 데이터의 'dispute_resolution_guide'에 포함된 👉 [방어 특약]을 반드시 그대로 복붙하여 제공할 것!)\n"
         "   - [5. 📱 카톡/내용증명 복붙용 기선제압 대본]: 중개사나 임대인이 반박하지 못하도록 매우 논리정연하고 단호한 '장문'으로 작성. (경매 물건일 경우, 허위 유치권자나 악성 점유자를 쫓아낼 살벌한 내용증명 및 형사고소 예고 대본을 작성할 것)\n"
         "   - [6. 🏛️ 국가 공공 주거망/상가 긴급 우회로 (Bypass)]: 계약이 위험하거나 예산이 부족할 경우, JSON 데이터의 'public_housing_alternatives'를 반드시 출력하여 LH/SH 등 안전한 공공 주거망이나 공공 상가 입찰로 강제 피난시킬 것.\n"
+        "   - [7. 🎯 AI 청약 가점 계산 및 맞춤형 전략 (청약홈 연동)]: 유저가 제공한 'subscription_points' (가점) 및 'dependents' (부양가족 수) 정보를 바탕으로, 당신의 최신 법령 지식(다자녀, 신혼부부, 생애최초 특공 등 매년 바뀌는 가점/특공 룰)을 활용하여 최종 당첨 가능성을 유추하십시오. JSON의 'diagnostic_summary'에 청약홈 데이터가 있다면 이를 결합하여 최적의 타겟(가점제 직진, 특공 우회, 2030 추첨제 등)을 지정하십시오.\n"
         "2. 어조 및 법적 책임: 단정적 표현 대신 '보증금을 잃을 위험이 매우 큽니다', '계약을 신중히 재고하십시오' 등 세련된 로펌 어조를 사용하십시오. 치명적 위험 시 '대한법률구조공단(132)' 무료 법률 상담을 안내하십시오.\n"
         "3. [부동산 실전 지뢰밭 및 무인매장 팩트 폭행 (절대 지식베이스)]: 2번 목차 작성 시, 유저의 매물 정보를 아래 지식베이스와 대조하여 소름 돋는 팩트 폭행을 수행하십시오.\n"
         "   - [무인 세탁소/빨래방]: 기계 세팅비(CAPEX) 1억 이상. 옆 건물에 최신 기계 들어오면 기계 이사 불가 및 고정비(전기/가스) 누적으로 파산하는 치킨게임 경고.\n"
