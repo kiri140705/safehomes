@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+# Deployment Update: Force UTF-8 Encoding Fix
 import uvicorn
 from fastapi import FastAPI
 from starlette.middleware.base import BaseHTTPMiddleware
