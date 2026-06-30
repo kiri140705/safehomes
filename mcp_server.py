@@ -1,65 +1,34 @@
 # -*- coding: utf-8 -*-
-# Deployment Update: Force UTF-8 Encoding Fix
-import uvicorn
-from fastapi import FastAPI
-from starlette.middleware.base import BaseHTTPMiddleware
 import json
-from mcp.server import Server
-from mcp.server.sse import SseServerTransport
-from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import Tool, TextContent
+import uvicorn
+from fastapi.middleware.cors import CORSMiddleware
+from mcp.server.fastmcp import FastMCP
+from pydantic import Field
+from typing import Annotated
 from safehomes_ocr import RegistryParser
 from public_data_api import PublicDataFetcher
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.routing import Route, Mount
-from starlette.applications import Starlette
 
-app_mcp = Server("safehomes")
+# Initialize the FastMCP Server
+mcp = FastMCP("safehomes")
 ocr_parser = RegistryParser()
 public_fetcher = PublicDataFetcher()
 
-@app_mcp.list_tools()
-async def handle_list_tools() -> list[Tool]:
-    return [
-        Tool(
-            name="AnalyzeRealEstateSafety",
-            description="Analyzes real estate safety risks using OCR text from contracts and property registry for SafeHomes(세이프홈즈).",
-            inputSchema={
-                "type": "object",
-                                "properties": {
-                    "ocr_text": {
-                        "type": "string",
-                        "description": "등기부등본 및 계약서의 전체 OCR 추출 텍스트"
-                    },
-                    "address": {
-                        "type": "string",
-                        "description": "진단할 부동산의 도로명 주소 또는 지번 주소"
-                    },
-                    "deposit": {
-                        "type": "integer",
-                        "description": "계약 예정인 전세 또는 월세 보증금 금액 (단위: 만원)"
-                    }
-                },
-                "required": ["ocr_text", "address", "deposit"]
-            },
-            annotations={
-                "title": "SafeHomes(세이프홈즈) 부동산 위험 진단",
-                "readOnlyHint": True,
-                "destructiveHint": False,
-                "idempotentHint": True,
-                "openWorldHint": True
-            }
-        )
-    ]
-
-@app_mcp.call_tool()
-async def handle_call_tool(name: str, arguments: dict | None) -> list[TextContent]:
-    if name != "AnalyzeRealEstateSafety":
-        raise ValueError(f"Unknown tool: {name}")
-    ocr_text = arguments.get("ocr_text", "")
-    address = arguments.get("address", "")
-    deposit = arguments.get("deposit", 0)
-    
+@mcp.tool(
+    name="AnalyzeRealEstateSafety",
+    description="Analyzes real estate safety risks using OCR text from contracts and property registry for SafeHomes(세이프홈즈).",
+    annotations={
+        "title": "SafeHomes(세이프홈즈) 부동산 위험 진단",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+def analyze_real_estate_safety(
+    ocr_text: Annotated[str, Field(description="등기부등본 및 계약서의 전체 OCR 추출 텍스트")],
+    address: Annotated[str, Field(description="진단할 부동산의 도로명 주소 또는 지번 주소")],
+    deposit: Annotated[int, Field(description="계약 예정인 전세 또는 월세 보증금 금액 (단위: 만원)")]
+) -> str:
     ocr_result = ocr_parser.analyze_ocr_text(ocr_text)
     ledger_result = public_fetcher.check_building_ledger(address)
     price_result = public_fetcher.get_market_price_risk(address, deposit)
@@ -71,50 +40,17 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
         "ocr_analysis": ocr_result,
         "building_ledger": ledger_result,
         "price_risk": price_result,
-        "disclaimer": "본 안전 분석 결과는 공공데이터 및 예상치에 따른 참고용 1차 스크리닝이며, 최종 계약에 대한 법적 책임은 지지 않습니다. 계약 전 반드시 전문가(공인중개사, 변호사)와 교차 검증하시기 바랍니다."
+        "disclaimer": "본 안전 분석 결과는 공공데이터 및 예상치에 따른 참고용 1차 스크리닝이며, 최종 계약에 대한 법적 책임을 지지 않습니다. 계약 전 반드시 전문가(공인중개사, 변호사)와 교차 검증하시기 바랍니다."
     }
     
-    return [TextContent(type="text", text=json.dumps(final_report, ensure_ascii=False))]
+    # FastMCP automatically wraps returned strings in TextContent
+    return json.dumps(final_report, ensure_ascii=False)
 
-# SSE Transport
-sse = SseServerTransport(
-    "/mcp/messages/",
-    security_settings=TransportSecuritySettings(enable_dns_rebinding_protection=False)
-)
+# Create the Streamable HTTP ASGI app
+# This returns a Starlette app that listens on /mcp (default)
+app = mcp.streamable_http_app()
 
-async def handle_sse(scope, receive, send):
-    async with sse.connect_sse(scope, receive, send) as streams:
-        await app_mcp.run(streams[0], streams[1], app_mcp.create_initialization_options())
-
-app = FastAPI(title="SafeHomes MCP Server")
-
-from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
-import datetime
-
-class LoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        try:
-            with open('requests.log', 'a', encoding='utf-8') as f:
-                headers_str = str(dict(request.headers))
-                f.write(f"[{datetime.datetime.now()}] {request.method} {request.url.path} {request.url.query}\nHeaders: {headers_str}\n")
-        except:
-            pass
-        response = await call_next(request)
-        return response
-
-app.add_middleware(LoggingMiddleware)
-
-@app.get('/logs')
-def get_logs():
-    try:
-        with open('requests.log', 'r', encoding='utf-8') as f:
-            from starlette.responses import PlainTextResponse
-            return PlainTextResponse(f.read())
-    except Exception as e:
-        return str(e)
-
-
+# Add CORS Middleware to the Starlette app
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -123,22 +59,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def health_check():
-    return {"status": "ok"}
+# Add health check endpoint for KakaoCloud Liveness/Readiness probes
+from starlette.routing import Route
+from starlette.responses import JSONResponse
 
-from fastapi import Request
+async def health_check(request):
+    return JSONResponse({"status": "ok"})
 
-@app.get("/mcp")
-@app.get("/mcp/sse")
-async def sse_endpoint(request: Request):
-    from starlette.responses import Response
-    await handle_sse(request.scope, request.receive, request._send)
-    return Response()
-
-app.mount("/mcp/messages", sse.handle_post_message)
-app.mount("/messages", sse.handle_post_message)
-app.mount("/mcp/mcp/messages", sse.handle_post_message)
+app.routes.append(Route("/", endpoint=health_check, methods=["GET"]))
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
