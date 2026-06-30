@@ -21,6 +21,7 @@ async def handle_list_tools() -> list[Tool]:
     return [
         Tool(
             name="analyze_real_estate_safety",
+            title="SafeHomes(세이프홈즈)",
             description="safehomes(세이프홈즈) 전월세 안전 진단 비서입니다. 등기부등본 및 계약서의 OCR 텍스트와 보증금을 기반으로 공공데이터를 조회하여 위험을 분석합니다.",
             inputSchema={
                 "type": "object",
@@ -41,7 +42,7 @@ async def handle_list_tools() -> list[Tool]:
                 "required": ["ocr_text", "address", "deposit"]
             },
             annotations={
-                "title": "safehomes(세이프홈즈) 부동산 위험 진단",
+                "title": "세이프홈즈 부동산 위험 진단",
                 "readOnlyHint": True,
                 "destructiveHint": False,
                 "idempotentHint": True,
@@ -80,17 +81,7 @@ async def handle_sse(scope, receive, send):
     async with sse.connect_sse(scope, receive, send) as streams:
         await app_mcp.run(streams[0], streams[1], app_mcp.create_initialization_options())
 
-# 슬래시 자동 리다이렉트(307) 방지 미들웨어 (브라우저 CORS Preflight OPTIONS 요청 보호) - Pure ASGI (SSE 호환)
-class TrailingSlashMiddleware:
-    def __init__(self, app):
-        self.app = app
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope["path"] == "/mcp/messages":
-            scope["path"] = "/mcp/messages/"
-        await self.app(scope, receive, send)
-
 app = FastAPI(title="SafeHomes MCP Server")
-app.add_middleware(TrailingSlashMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -113,6 +104,8 @@ async def sse_endpoint(request: Request):
     return Response()
 
 app.mount("/mcp/messages", sse.handle_post_message)
+app.mount("/messages", sse.handle_post_message)
+app.mount("/mcp/mcp/messages", sse.handle_post_message)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
