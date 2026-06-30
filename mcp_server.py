@@ -63,25 +63,13 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
 
 # SSE Transport
 sse = SseServerTransport(
-    "/messages/",
+    "/mcp/messages/",
     security_settings=TransportSecuritySettings(enable_dns_rebinding_protection=False)
 )
 
 async def handle_sse(scope, receive, send):
     async with sse.connect_sse(scope, receive, send) as streams:
         await app_mcp.run(streams[0], streams[1], app_mcp.create_initialization_options())
-
-async def sse_endpoint(request):
-    from starlette.responses import Response
-    await handle_sse(request.scope, request.receive, request._send)
-    return Response()
-
-routes = [
-    Route("/sse", endpoint=sse_endpoint, methods=["GET"]),
-    Mount("/messages", app=sse.handle_post_message)
-]
-
-sse_app = Starlette(routes=routes)
 
 # 슬래시 자동 리다이렉트(307) 방지 미들웨어 (브라우저 CORS Preflight OPTIONS 요청 보호) - Pure ASGI (SSE 호환)
 class TrailingSlashMiddleware:
@@ -106,7 +94,15 @@ app.add_middleware(
 def health_check():
     return {"status": "ok"}
 
-app.mount("/mcp", sse_app)
+from fastapi import Request
+
+@app.get("/mcp")
+async def sse_endpoint(request: Request):
+    from starlette.responses import Response
+    await handle_sse(request.scope, request.receive, request._send)
+    return Response()
+
+app.mount("/mcp/messages", sse.handle_post_message)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
