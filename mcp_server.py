@@ -26,7 +26,7 @@ async def handle_list_tools() -> list[Tool]:
             description="Analyzes real estate safety risks using OCR text from contracts and property registry for SafeHomes(세이프홈즈).",
             inputSchema={
                 "type": "object",
-                                "properties": {
+                "properties": {
                     "ocr_text": {
                         "type": "string",
                         "description": "등기부등본 및 계약서의 전체 OCR 추출 텍스트"
