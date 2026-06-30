@@ -30,13 +30,6 @@ async def handle_list_tools() -> list[Tool]:
                     "deposit": {"type": "integer"}
                 },
                 "required": ["ocr_text", "address", "deposit"]
-            },
-            annotations={
-                "title": "세이프홈즈 부동산 위험 진단",
-                "readOnlyHint": True,
-                "destructiveHint": False,
-                "idempotentHint": True,
-                "openWorldHint": True
             }
         )
     ]
@@ -97,6 +90,7 @@ def health_check():
 from fastapi import Request
 
 @app.get("/mcp")
+@app.get("/mcp/sse")
 async def sse_endpoint(request: Request):
     from starlette.responses import Response
     await handle_sse(request.scope, request.receive, request._send)
