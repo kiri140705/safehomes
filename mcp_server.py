@@ -26,7 +26,7 @@ async def handle_list_tools() -> list[Tool]:
             description="Analyzes real estate safety risks using OCR text from contracts and property registry for SafeHomes(세이프홈즈).",
             inputSchema={
                 "type": "object",
-                "properties": {
+                                "properties": {
                     "ocr_text": {
                         "type": "string",
                         "description": "등기부등본 및 계약서의 전체 OCR 추출 텍스트"
@@ -87,6 +87,33 @@ async def handle_sse(scope, receive, send):
         await app_mcp.run(streams[0], streams[1], app_mcp.create_initialization_options())
 
 app = FastAPI(title="SafeHomes MCP Server")
+
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
+import datetime
+
+class LoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        try:
+            with open('requests.log', 'a', encoding='utf-8') as f:
+                headers_str = str(dict(request.headers))
+                f.write(f"[{datetime.datetime.now()}] {request.method} {request.url.path} {request.url.query}\nHeaders: {headers_str}\n")
+        except:
+            pass
+        response = await call_next(request)
+        return response
+
+app.add_middleware(LoggingMiddleware)
+
+@app.get('/logs')
+def get_logs():
+    try:
+        with open('requests.log', 'r', encoding='utf-8') as f:
+            from starlette.responses import PlainTextResponse
+            return PlainTextResponse(f.read())
+    except Exception as e:
+        return str(e)
+
 
 app.add_middleware(
     CORSMiddleware,
