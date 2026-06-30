@@ -21,8 +21,7 @@ async def handle_list_tools() -> list[Tool]:
     return [
         Tool(
             name="analyze_real_estate_safety",
-            title="SafeHomes(세이프홈즈)",
-            description="safehomes(세이프홈즈) 전월세 안전 진단 비서입니다. 등기부등본 및 계약서의 OCR 텍스트와 보증금을 기반으로 공공데이터를 조회하여 위험을 분석합니다.",
+            description="SafeHomes(세이프홈즈) 전월세 안전 진단 비서입니다. 등기부등본 및 계약서의 OCR 텍스트와 보증금을 기반으로 공공데이터를 조회하여 위험을 분석합니다.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -42,7 +41,7 @@ async def handle_list_tools() -> list[Tool]:
                 "required": ["ocr_text", "address", "deposit"]
             },
             annotations={
-                "title": "세이프홈즈 부동산 위험 진단",
+                "title": "SafeHomes(세이프홈즈)",
                 "readOnlyHint": True,
                 "destructiveHint": False,
                 "idempotentHint": True,
@@ -58,17 +57,21 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
     ocr_text = arguments.get("ocr_text", "")
     address = arguments.get("address", "")
     deposit = arguments.get("deposit", 0)
+    
     ocr_result = ocr_parser.analyze_ocr_text(ocr_text)
     ledger_result = public_fetcher.check_building_ledger(address)
     price_result = public_fetcher.get_market_price_risk(address, deposit)
+    
     is_totally_safe = ocr_result["is_safe"] and not ledger_result["is_illegal_building"] and not price_result["is_kangtong_risk"]
+    
     final_report = {
         "status": "SAFE" if is_totally_safe else "DANGER",
         "ocr_analysis": ocr_result,
         "building_ledger": ledger_result,
         "price_risk": price_result,
-        "disclaimer": "※ 본 분석 결과는 공공데이터 및 통상적인 안전 기준에 따른 참고용 1차 스크리닝이며, 최종 계약에 대한 법적 책임은 지지 않습니다. 계약 전 반드시 전문가(공인중개사/변호사)와 교차 검증하시기 바랍니다."
+        "disclaimer": "본 안전 분석 결과는 공공데이터 및 예상치에 따른 참고용 1차 스크리닝이며, 최종 계약에 대한 법적 책임은 지지 않습니다. 계약 전 반드시 전문가(공인중개사, 변호사)와 교차 검증하시기 바랍니다."
     }
+    
     return [TextContent(type="text", text=json.dumps(final_report, ensure_ascii=False))]
 
 # SSE Transport
@@ -82,6 +85,7 @@ async def handle_sse(scope, receive, send):
         await app_mcp.run(streams[0], streams[1], app_mcp.create_initialization_options())
 
 app = FastAPI(title="SafeHomes MCP Server")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
