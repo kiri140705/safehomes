@@ -20,7 +20,7 @@ public_fetcher = PublicDataFetcher()
 async def handle_list_tools() -> list[Tool]:
     return [
         Tool(
-            name="SafeHomes(세이프홈즈)",
+            name="analyze_real_estate_safety",
             description="safehomes(세이프홈즈) 전월세 안전 진단 비서입니다. 등기부등본 및 계약서의 OCR 텍스트와 보증금을 기반으로 공공데이터를 조회하여 위험을 분석합니다.",
             inputSchema={
                 "type": "object",
@@ -39,13 +39,20 @@ async def handle_list_tools() -> list[Tool]:
                     }
                 },
                 "required": ["ocr_text", "address", "deposit"]
+            },
+            annotations={
+                "title": "safehomes(세이프홈즈) 부동산 위험 진단",
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": True
             }
         )
     ]
 
 @app_mcp.call_tool()
 async def handle_call_tool(name: str, arguments: dict | None) -> list[TextContent]:
-    if name != "SafeHomes(세이프홈즈)":
+    if name != "analyze_real_estate_safety":
         raise ValueError(f"Unknown tool: {name}")
     ocr_text = arguments.get("ocr_text", "")
     address = arguments.get("address", "")
