@@ -30,19 +30,35 @@ public_fetcher = PublicDataFetcher()
     }
 )
 def analyze_real_estate_safety(
-    ocr_text: Annotated[str, Field(description="등기부등본 및 계약서의 전체 OCR 추출 텍스트")],
-    address: Annotated[str, Field(description="진단할 부동산의 주소 (중요: 추출 시 카카오 지식그래프를 활용해 해당 주소의 가장 상위 행정구역인 '시/도' 단위를 반드시 앞에 붙여서 추출할 것. 예: 유저가 '오목로'만 쳐도 '서울특별시 양천구 오목로'로 추출)")],
-    deposit: Annotated[int, Field(description="계약 예정인 매매대금 또는 전/월세 보증금 (단위: 만원)")],
-    contract_type: Annotated[str, Field(description="계약 종류 ('매매', '전세', '월세', '경매' 중 택1)")],
-    property_type: Annotated[str, Field(description="매물 종류 ('주택', '상가', '오피스텔', '지식산업센터', '빌딩/통상가', '숙박업(호텔/펜션)', '재개발(입주권)', '토지(전/답)', '임야(산/묘지)' 중 택1)")],
+    address: Annotated[str, Field(description="진단할 부동산의 주소. 모를 경우 '전국'")] = "전국",
+    deposit: Annotated[int, Field(description="계약 예정인 매매대금 또는 전/월세 보증금 (단위: 만원). 모를 경우 0")] = 0,
+    contract_type: Annotated[str, Field(description="계약 종류 ('매매', '전세', '월세', '경매' 중 택1). 모를 경우 '매매'")] = "매매",
+    property_type: Annotated[str, Field(description="매물 종류 ('주택', '상가', '오피스텔', '지식산업센터', '빌딩/통상가', '숙박업(호텔/펜션)', '재개발(입주권)', '토지(전/답)', '임야(산/묘지)' 중 택1). 모를 경우 '주택'")] = "주택",
+    ocr_text: Annotated[str, Field(description="등기부등본 및 계약서의 전체 OCR 추출 텍스트. 유저가 이미지나 문서를 제공하지 않은 경우 반드시 빈 문자열('')을 입력하세요.")] = "",
     current_status: Annotated[str, Field(description="현재 진행 상태 ('계약 전', '계약 중', '사고 발생/분쟁' 중 택1)")] = "계약 전",
     monthly_rent: Annotated[int, Field(description="월세 금액 (단위: 만원)")] = 0,
     business_type: Annotated[str, Field(description="상가/지산일 경우 희망 업종 (유저가 입력하지 않았다면 '일반업종'으로 추출할 것)")] = "",
-    intent: Annotated[str, Field(description="유저의 질의 의도 ('사기 방어 및 계약 분석', '거시경제 및 집값 동향', '청약 및 가점 전략' 중 가장 적합한 것을 스스로 판단하여 선택)")] = "사기 방어 및 계약 분석",
-    subscription_points: Annotated[int, Field(description="유저의 청약 가점 (무주택, 부양가족, 통장가입기간 기반 0~84점. 모르면 0)")] = 0,
-    dependents: Annotated[int, Field(description="유저의 부양가족 수 (자녀 등, 모르면 0)")] = 0,
+    intent: Annotated[str, Field(description="유저의 질의 의도 ('사기 방어 및 계약 분석', '거시경제 및 집값 동향', '청약 및 가점 전략', '일반 부동산 상담 및 팩트폭행' 중 택1)")] = "일반 부동산 상담 및 팩트폭행",
+    homeless_years: Annotated[int, Field(description="유저의 무주택 기간 (단위: 년. 모르면 0)")] = 0,
+    subscription_years: Annotated[int, Field(description="유저의 청약통장 가입 기간 (단위: 년. 모르면 0)")] = 0,
+    dependents: Annotated[int, Field(description="유저의 본인 제외 부양가족 수 (아내 1명, 자녀 2명이면 총 3명. 모르면 0)")] = 0,
+    user_query: Annotated[str, Field(description="유저가 실제 입력한 질문 원본 텍스트 전체. 요약하지 말고 그대로 넘길 것. 모르면 ''")] = "",
 ) -> str:
-    # 0. 인텐트 동적 라우팅 (거시경제 / 청약 / 사기 방어)
+    # 0. 인텐트 동적 라우팅 (거시경제 / 청약 / 사기 방어 / 일반 상담)
+    if intent == "일반 부동산 상담 및 팩트폭행":
+        general_advice = public_fetcher.get_general_advice(user_query)
+        return json.dumps({
+            "status": "INFO",
+            "diagnostic_summary": general_advice,
+            "market_price_analysis": "해당 모드 생략",
+            "building_ledger_analysis": "해당 모드 생략",
+            "brokerage_fee_limit": "",
+            "recommended_safe_clauses": [],
+            "field_inspection_checklist": [],
+            "negotiation_message": "",
+            "public_housing_alternatives": [],
+            "dispute_resolution_guide": []
+        }, ensure_ascii=False)
     if intent == "거시경제 및 집값 동향":
         macro_report = public_fetcher.get_macro_real_estate_stats(address)
         return json.dumps({
@@ -59,7 +75,7 @@ def analyze_real_estate_safety(
         }, ensure_ascii=False)
         
     if intent == "청약 및 가점 전략":
-        applyhome_report = public_fetcher.get_applyhome_subscription_info(address, deposit, subscription_points, dependents)
+        applyhome_report = public_fetcher.get_applyhome_subscription_info(address, deposit, homeless_years, subscription_years, dependents)
         if not applyhome_report:
             applyhome_report = "해당 자본/가점 조건으로 조회 가능한 최적의 청약 정보가 없습니다."
         return json.dumps({
@@ -98,7 +114,7 @@ def analyze_real_estate_safety(
         public_housing_alternatives = public_fetcher.get_public_housing_alternatives(property_type, deposit, address, is_danger)
     else:
         # 안전한 매물이라도 청약 스나이퍼 라우팅은 백그라운드로 작동시킴
-        applyhome_msg = public_fetcher.get_applyhome_subscription_info(address, deposit, subscription_points, dependents)
+        applyhome_msg = public_fetcher.get_applyhome_subscription_info(address, deposit, homeless_years, subscription_years, dependents)
         if applyhome_msg:
             public_housing_alternatives.append(applyhome_msg)
 
@@ -291,7 +307,9 @@ def analyze_real_estate_safety(
         "   - [4. 🛡️ 방어용 강력 특약]: 유저가 생각할 필요 없이, 계약서에 토씨 하나 안 틀리고 그대로 베껴 적을 수 있는 완벽한 문장으로 3개 이상 길게 제시. (JSON 데이터의 'dispute_resolution_guide'에 포함된 👉 [방어 특약]을 반드시 그대로 복붙하여 제공할 것!)\n"
         "   - [5. 📱 카톡/내용증명 복붙용 기선제압 대본]: 중개사나 임대인이 반박하지 못하도록 매우 논리정연하고 단호한 '장문'으로 작성. (경매 물건일 경우, 허위 유치권자나 악성 점유자를 쫓아낼 살벌한 내용증명 및 형사고소 예고 대본을 작성할 것)\n"
         "   - [6. 🏛️ 국가 공공 주거망/상가 긴급 우회로 (Bypass)]: 계약이 위험하거나 예산이 부족할 경우, JSON 데이터의 'public_housing_alternatives'를 반드시 출력하여 LH/SH 등 안전한 공공 주거망이나 공공 상가 입찰로 강제 피난시킬 것.\n"
-        "   - [7. 🎯 AI 청약 가점 계산 및 맞춤형 전략 (청약홈 연동)]: 유저가 제공한 'subscription_points' (가점) 및 'dependents' (부양가족 수) 정보를 바탕으로, 당신의 최신 법령 지식(다자녀, 신혼부부, 생애최초 특공 등 매년 바뀌는 가점/특공 룰)을 활용하여 최종 당첨 가능성을 유추하십시오. JSON의 'diagnostic_summary'에 청약홈 데이터가 있다면 이를 결합하여 최적의 타겟(가점제 직진, 특공 우회, 2030 추첨제 등)을 지정하십시오.\n"
+        "   - [7. 🎯 AI 청약 가점 계산 및 맞춤형 전략 (청약홈 연동)]: 당신은 절대 청약 점수를 임의로 요약하거나 넘겨짚지 마십시오. 파이썬 툴이 JSON의 'diagnostic_summary' 항목을 통해 반환한 **[청약 점수 산출 완료]** 텍스트와 **[팩트폭행 결론]**을 토씨 하나 틀리지 말고 100% 그대로 복붙하여 유저에게 출력하십시오. 당신은 오직 이 파이썬의 결론 뒤에, 최신 부동산 정책(예: 2026년 다자녀 기준 2자녀 완화 등)에 대한 보충 설명만 덧붙일 수 있습니다.\n"
+        "   - [8. 📸 서류 미제출 및 일반 상담 응대 가이드]: 만약 JSON 데이터 내 'diagnostic_summary' 또는 'summary_message'에 '[1타 강사]' 키워드 또는 '[서류 미제출]'이라는 내용이 있다면, 유저에게 기술적인 단어(OCR 등)를 절대 쓰지 마십시오. 파이썬이 제공한 텍스트를 그대로 브리핑한 뒤, **'더 정확한 권리 분석을 원하시면 계약하려는 매물의 주소/보증금/평수를 알려주시거나, 등기부등본 사진을 채팅창에 바로 올려주세요.'**라고 친절하고 자연스럽게 안내하십시오.\n"
+        "   - [9. 🚨 카카오 AI 뇌피셜 금지령]: API 호출이 필요 없는 일반 상담 질문이더라도, 당신 스스로 판단하여 두루뭉술한 답변을 내뱉지 마십시오. 반드시 파이썬 툴이 반환하는 'diagnostic_summary' (1타 강사 지식베이스)의 문장을 최우선으로 출력하십시오.\n"
         "2. 어조 및 법적 책임: 단정적 표현 대신 '보증금을 잃을 위험이 매우 큽니다', '계약을 신중히 재고하십시오' 등 세련된 로펌 어조를 사용하십시오. 치명적 위험 시 '대한법률구조공단(132)' 무료 법률 상담을 안내하십시오.\n"
         "3. [부동산 실전 지뢰밭 및 무인매장 팩트 폭행 (절대 지식베이스)]: 2번 목차 작성 시, 유저의 매물 정보를 아래 지식베이스와 대조하여 소름 돋는 팩트 폭행을 수행하십시오.\n"
         "   - [무인 세탁소/빨래방]: 기계 세팅비(CAPEX) 1억 이상. 옆 건물에 최신 기계 들어오면 기계 이사 불가 및 고정비(전기/가스) 누적으로 파산하는 치킨게임 경고.\n"
@@ -337,7 +355,19 @@ def analyze_real_estate_safety(
         "   - 🚨 **[긴급 구난(SOS) 발동 조건]**: 신탁, 가등기, 임차권등기, 가처분, 가압류 등의 SS급 위험이 감지되면, 유저가 제공한 주소를 인식하여 **'현재 [지역명] 매물에서 [키워드] 정황이 감지되었습니다. 계약을 당장 중지하시고, 당신의 전 재산을 지키기 위해 즉시 [대한법률구조공단(국번없이 132) 해당 지역 관할 지부]에 방문하시어 무료 법률 상담을 받아보실 것을 강력히 권장합니다.'** 라고 출력하십시오.\n"
         "5. [상가임대차보호법 환산보증금 스캐너]: 상가일 경우 '환산보증금 = 보증금 + (월세 × 100)' 자동 계산 및 상한선 초과 시 '우선변제권 상실' 경고.\n"
         "6. [HUG 전세보증보험 오토-싱크 스캐너]: 빌라(공시지가 126% 룰), 아파트(KB시세 90% 룰), 다가구(타 세입자 보증금 룰) 등 최신 HUG 심사 기준 자동 동기화 적용.\n"
-        "7. [상황 맞춤형 카톡 협상 대본 생성]: 위 분석을 종합하여 중개사에게 바로 복붙할 수 있는 날카로운 실전 카톡 대본을 5번 목차에 출력하십시오."
+        "7. [상황 맞춤형 카톡 협상 대본 생성]: 위 분석을 종합하여 중개사에게 바로 복붙할 수 있는 날카로운 실전 카톡 대본을 5번 목차에 출력하십시오.\n"
+        "8. [🌟 세이프홈즈 절대 헌법 및 정체성 (Constitution)]: 유저가 '세이프홈즈가 뭐야?', '어떤 기능이 있어?', '너 뭐하는 애야?' 라고 묻거나, 세이프홈즈의 기능에 대해 포괄적으로 질문할 경우, 아래 11대 핵심 기능을 기반으로 가장 완벽하고 유창하게 자신을 소개하십시오.\n"
+        "   - 1. [상권 분석 & 재무 컨설팅]: 반경 500m 타겟 유동인구, 월세 10% 룰 기반 목표 매출 역산, 풀오토 vs 사장 직접 운영 마진율 비교, 예산 맞춤 대안 상권 추천.\n"
+        "   - 2. [대형 로펌급 법률 & 사기 방어]: 전세사기 10대 악질 키워드 스캔(신탁, 임차권등기 등), 대한법률구조공단(132) SOS 매핑, 강제 방어 특약 삽입.\n"
+        "   - 3. [부동산 매물 종류별 100% 맞춤 진단]: 상가 정화조 용량, 숙박업 소방필증, 오피스텔 불법전용, 토지 농취증 등 매물별 치명적 맹점 탐문 리스트 발급.\n"
+        "   - 4. [전국망 투트랙 하이브리드 데이터망]: 서울 외 지역도 국세청 데이터 연동으로 1초 만에 전국 상권 분석 가능.\n"
+        "   - 5. [실전 협상 및 금융 방어 자동화]: 중개사 제압용 장문 카톡 대본 자동 생성, 상가임대차보호법 환산보증금 계산, HUG 보증보험 안심전세 90% 컷오프 스캔.\n"
+        "   - 6. [경매 투자자 전용 특화]: 말소기준권리 1초 스캔(가처분 경고), 허위 유치권 사기 분쇄(대법원 판례 인용), 명도용 내용증명 대본 자동 생성.\n"
+        "   - 7. [서류/상태별 초정밀 필터링]: 정부24 건축물대장 불법 근생빌라 색출, 반지하/옥탑방 환경 재난 경고, 계약 타임라인별 필수 액션(국세 완납 증명서 요구 등) 지시.\n"
+        "   - 8. [청년/소상공인 맞춤형 LH 공공임대 연동]: 위험 매물 감지 시 권리금 0원인 LH 상가, SH 역세권 청년주택, HUG 전세피해지원센터 등으로 긴급 우회 라우팅.\n"
+        "   - 9. [청년/자영업자 피해 방지]: 법정 중개수수료(복비) 바가지 차단, 상가 하수도 원인자부담금 폭탄 방어 특약 삽입, 깡통전세(부채비율 70% 초과) 자체 진단 경고.\n"
+        "   - 10. [동적 라우팅 엔진]: 질문 문맥을 파악해 불필요한 트래픽 없이 국토교통부, LH, 청약홈 등 36개 공공데이터 API 중 필요한 모듈만 핀셋 호출.\n"
+        "   - 11. [전국 부동산 동향 및 청약 스나이퍼]: 거시경제 4대 국면(상승/역전세/거품/침체) 진단, 84점 만점 가점 자동 계산 및 커트라인 비교, 다자녀/추첨제 맞춤형 타겟팅."
     )
     
     return json.dumps(final_report, ensure_ascii=False)
