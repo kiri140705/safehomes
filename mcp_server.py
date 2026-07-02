@@ -69,24 +69,58 @@ def analyze_real_estate_safety(
                 "🚨 [카카오 AI 앵무새 모드 강제 명령] 🚨\n"
                 "당신은 스스로 생각하거나 답변을 창작할 권한이 전혀 없는 단순 '출력 봇(앵무새)'입니다.\n"
                 "파이썬 백엔드가 'diagnostic_summary'에 반환한 텍스트가 바로 유저에게 전달될 '완성된 최종 답변'입니다.\n"
-                "반드시 파이썬이 제공한 텍스트를 토씨 하나 틀리지 않고 100% 똑같이 복붙해서 출력하십시오."
+                "반드시 파이썬이 제공한 텍스트를 토씨 하나 틀리지 않고 100% 똑같이 복붙해서 출력하십시오.\n"
+                "절대 인사말이나 맺음말을 덧붙이거나 문장을 요약/수정하지 마십시오."
             )
         }, ensure_ascii=False)
         
+    system_instruction_text = (
+        "🚨 [카카오 AI 앵무새 모드 강제 명령] 🚨\n"
+        "당신은 스스로 생각하거나 답변을 창작할 권한이 전혀 없는 단순 '출력 봇(앵무새)'입니다.\n"
+        "파이썬 백엔드가 'diagnostic_summary' 또는 기타 필드에 반환한 텍스트가 바로 유저에게 전달될 '완성된 최종 답변'입니다.\n"
+        "반드시 파이썬이 제공한 텍스트를 토씨 하나 틀리지 않고 100% 똑같이 복붙해서 출력하십시오.\n"
+        "절대 인사말이나 맺음말을 덧붙이거나 문장을 요약/수정하지 마십시오."
+    )
+        
+    import re
+    
+    # 0. 카카오 LLM이 보증금 추출에 실패했을 경우 정규식으로 직접 파싱 (안전장치)
+    if deposit == 0:
+        match_eok = re.search(r'([0-9\.]+)\s*억(?:\s*([0-9]+)\s*천)?', user_query)
+        if match_eok:
+            eok = float(match_eok.group(1))
+            cheon = int(match_eok.group(2)) if match_eok.group(2) else 0
+            deposit = int(eok * 100000000 + cheon * 10000000)
+        else:
+            match_cheonman = re.search(r'([0-9]+)\s*천\s*만', user_query)
+            if match_cheonman:
+                deposit = int(match_cheonman.group(1)) * 10000000
+            else:
+                match_man = re.search(r'([0-9,]+)\s*만', user_query)
+                if match_man:
+                    val = int(match_man.group(1).replace(",", ""))
+                    if val >= 100: # 최소 100만 원 이상일 때만 (평수 등과 헷갈리지 않게)
+                        deposit = val * 10000
+
     if intent == "일반 부동산 상담 및 팩트폭행":
-        general_advice = public_fetcher.get_general_advice(user_query, address, deposit, monthly_rent, business_type)
-        return json.dumps({
-            "status": "INFO",
-            "diagnostic_summary": general_advice,
-            "market_price_analysis": "해당 모드 생략",
-            "building_ledger_analysis": "해당 모드 생략",
-            "brokerage_fee_limit": "",
-            "recommended_safe_clauses": [],
-            "field_inspection_checklist": [],
-            "negotiation_message": "",
-            "public_housing_alternatives": [],
-            "dispute_resolution_guide": []
-        }, ensure_ascii=False)
+        # 카카오 LLM이 구체적인 사기/위험 분석 요청을 '일반 상담'으로 잘못 분류한 경우 강제로 스나이퍼 로직(기본 흐름)으로 우회
+        if deposit > 0 and any(k in user_query for k in ["사기", "위험", "분석", "안전", "전세가율", "LTV", "깡통", "HUG", "보증보험", "특약", "계약", "전세"]):
+            pass # 아래의 메인 사기 방어 로직으로 자연스럽게 흘러가도록 통과시킴
+        else:
+            general_advice = public_fetcher.get_general_advice(user_query, address, deposit, monthly_rent, business_type)
+            return json.dumps({
+                "status": "INFO",
+                "diagnostic_summary": general_advice,
+                "market_price_analysis": "해당 모드 생략",
+                "building_ledger_analysis": "해당 모드 생략",
+                "brokerage_fee_limit": "",
+                "recommended_safe_clauses": [],
+                "field_inspection_checklist": [],
+                "negotiation_message": "",
+                "public_housing_alternatives": [],
+                "dispute_resolution_guide": [],
+                "system_instruction_for_llm": system_instruction_text
+            }, ensure_ascii=False)
     if intent == "거시경제 및 집값 동향":
         macro_report = public_fetcher.get_macro_real_estate_stats(address)
         return json.dumps({
@@ -99,11 +133,12 @@ def analyze_real_estate_safety(
             "field_inspection_checklist": [],
             "negotiation_message": "",
             "public_housing_alternatives": [],
-            "dispute_resolution_guide": []
+            "dispute_resolution_guide": [],
+            "system_instruction_for_llm": system_instruction_text
         }, ensure_ascii=False)
         
     if intent == "청약 및 가점 전략":
-        if any(k in user_query for k in ["LH", "공공임대", "행복주택", "청년", "장기전세", "사전청약", "매입임대", "분양전환", "신혼부부"]):
+        if any(k in user_query for k in ["LH", "공공임대", "행복주택", "청년", "장기전세", "사전청약", "매입임대", "분양전환", "신혼부부", "무순위", "줍줍", "상가", "입찰", "1인가구", "희망타운"]):
             applyhome_report = public_fetcher.get_realtime_public_housing_info(user_query, address, deposit)
         else:
             applyhome_report = public_fetcher.get_applyhome_subscription_info(address, deposit, homeless_years, subscription_years, dependents, user_query)
@@ -120,7 +155,8 @@ def analyze_real_estate_safety(
             "field_inspection_checklist": [],
             "negotiation_message": "",
             "public_housing_alternatives": [],
-            "dispute_resolution_guide": []
+            "dispute_resolution_guide": [],
+            "system_instruction_for_llm": system_instruction_text
         }, ensure_ascii=False)
 
     # 1. 기존 사기 방어 및 계약 분석 모드
@@ -308,7 +344,14 @@ def analyze_real_estate_safety(
     
     # 2. 상권 분석 (상가인 경우 깡통전세/건축물대장 스킵 후 즉시 상권분석 배치)
     if is_commercial:
-        actual_business_type = business_type if business_type else "일반업종"
+        actual_business_type = business_type
+        if intent == "상가 임대 및 권리금 상권분석":
+            # 카카오 LLM이 business_type을 추출하지 못했을 경우를 대비한 2차 안전장치
+            if not actual_business_type:
+                for k in ["고기", "삼겹살", "회", "일식", "술집", "호프", "맥주", "유흥", "카페", "커피", "디저트", "국밥", "분식", "식당", "아이스크림", "무인", "밀키트", "코인노래방"]:
+                    if k in user_query:
+                        actual_business_type = k
+                        break
         commercial_data = public_fetcher.analyze_commercial_area(address, actual_business_type, monthly_rent)
         full_markdown_report += (
             f"📈 **[World-Class 상권 분석 리포트]**\n"
