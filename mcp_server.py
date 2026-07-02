@@ -19,6 +19,12 @@ ocr_parser = RegistryParser()
 public_fetcher = PublicDataFetcher()
 
 import re
+from notification_db import init_db, register_user_alert, delete_user_alert, get_user_alerts, get_specific_alert, update_user_alert, delete_all_alerts
+from background_scanner import start_background_scanner
+
+# Initialize DB and start scanner thread
+init_db()
+start_background_scanner()
 
 @mcp.tool(
     name="AnalyzeRealEstateSafety",
@@ -101,6 +107,39 @@ def analyze_real_estate_safety(
                     val = int(match_man.group(1).replace(",", ""))
                     if val >= 100: # 최소 100만 원 이상일 때만 (평수 등과 헷갈리지 않게)
                         deposit = val * 10000
+                        
+    # 0.1 카카오 LLM이 '2억'을 20000(만원)으로 넘겼을 경우 원 단위로 보정
+    if 0 < deposit <= 1000000:
+        deposit = deposit * 10000
+        
+    if 0 < monthly_rent <= 1000000:
+        monthly_rent = monthly_rent * 10000
+
+    # =========================================================
+    # [무결점 전역 낚아채기(Global Interceptor)]
+    # 카카오 LLM이 '상가/권리금'에 낚여 오분류하더라도, 'LH/입찰/청약' 키워드가 있으면 강제 우회
+    # =========================================================
+    public_housing_keywords = ["LH", "SH", "공공임대", "행복주택", "청년임대", "매입임대", "장기전세", "사전청약", "신혼희망타운", "무순위", "줍줍", "상가 입찰", "상가입찰", "임대주택", "청약"]
+    
+    if any(k in user_query for k in public_housing_keywords):
+        applyhome_report = public_fetcher.get_realtime_public_housing_info(user_query, address, deposit)
+        
+        # 공공데이터가 제대로 반환되었다면 (즉, 해당 10대 시나리오에 걸렸다면)
+        if applyhome_report and "API 동기화 지연" not in applyhome_report:
+            return json.dumps({
+                "status": "INFO",
+                "diagnostic_summary": applyhome_report,
+                "commercial_area_analysis": "해당 모드 생략",
+                "market_price_analysis": "해당 모드 생략",
+                "building_ledger_analysis": "해당 모드 생략",
+                "brokerage_fee_limit": "",
+                "recommended_safe_clauses": [],
+                "field_inspection_checklist": [],
+                "negotiation_message": "",
+                "public_housing_alternatives": [],
+                "dispute_resolution_guide": [],
+                "system_instruction_for_llm": system_instruction_text
+            }, ensure_ascii=False)
 
     if intent == "일반 부동산 상담 및 팩트폭행":
         # 카카오 LLM이 구체적인 사기/위험 분석 요청을 '일반 상담'으로 잘못 분류한 경우 강제로 스나이퍼 로직(기본 흐름)으로 우회
@@ -179,12 +218,8 @@ def analyze_real_estate_safety(
     # 모드 1: 탐색 및 공격 (대안 추천)
     # ==========================================
     if is_danger or price_result["is_kangtong_risk"]:
-        public_housing_alternatives = public_fetcher.get_public_housing_alternatives(property_type, deposit, address, is_danger)
-    else:
-        # 안전한 매물이라도 청약 스나이퍼 라우팅은 백그라운드로 작동시킴
-        applyhome_msg = public_fetcher.get_applyhome_subscription_info(address, deposit, homeless_years, subscription_years, dependents)
-        if applyhome_msg:
-            public_housing_alternatives.append(applyhome_msg)
+        if property_type not in ["상가", "빌딩/통상가", "지식산업센터", "숙박업(호텔/펜션)"]:
+            public_housing_alternatives = public_fetcher.get_public_housing_alternatives(property_type, deposit, address, is_danger)
 
     # ==========================================
     # 모드 2: 사후 구제 및 분쟁 해결 (Rescue)
@@ -440,6 +475,210 @@ def analyze_real_estate_safety(
     )
     
     return json.dumps(final_report, ensure_ascii=False)
+
+@mcp.tool(
+    name="RegisterNotification",
+    description="유저가 부동산 알림(급매, 청약, 상가 공고 등)을 요청할 때 사용하는 툴입니다. 백엔드 DB에 조건을 저장하고 스케줄러가 이를 감시합니다.",
+    annotations={
+        "title": "SafeHomes 스나이퍼 알림 등록",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+def register_notification(
+    user_id: Annotated[str, Field(description="알림을 받을 유저의 고유 식별자(전화번호 또는 카톡/텔레그램 ID). 모를 경우 '임시유저'")] = "임시유저",
+    region: Annotated[str, Field(description="알림을 원하는 타겟 지역 (예: '마포구', '합정동', '전국')")] = "전국",
+    budget: Annotated[int, Field(description="최대 예산 또는 월세 조건 (단위: 만원)")] = 0,
+    interest_type: Annotated[str, Field(description="관심 분야 ('공공임대', '일반분양', '상가', '아파트' 등)")] = "공공임대"
+) -> str:
+    # DB에 저장
+    register_user_alert(user_id, region, budget, interest_type)
+    return json.dumps({
+        "status": "SUCCESS",
+        "message": f"[{user_id}] 님의 알림 등록이 완료되었습니다.\n- 타겟 지역: {region}\n- 관심 분야: {interest_type}\n- 예산 조건: {budget}만 원\n\n지금부터 세이프홈즈 서버가 24시간 실시간으로 감시하며, 조건에 맞는 공고나 급매물이 등장하는 즉시 카카오톡으로 푸시 알림을 발송해 드립니다!"
+    }, ensure_ascii=False)
+
+@mcp.tool(
+    name="ListMyNotifications",
+    description="유저가 현재 등록해둔 알림 목록을 확인하고 싶을 때 사용합니다. 유저가 알림을 수정/취소하기 전 알림 번호(alert_id)를 확인할 때 필수적으로 먼저 호출해야 합니다.",
+    annotations={
+        "title": "SafeHomes 내 알림 목록 조회",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+def list_my_notifications(
+    user_id: Annotated[str, Field(description="알림을 조회할 유저의 고유 식별자")] = "임시유저"
+) -> str:
+    alerts = get_user_alerts(user_id)
+    if not alerts:
+        return json.dumps({"status": "SUCCESS", "message": "현재 등록된 알림이 없습니다."}, ensure_ascii=False)
+        
+    msg = f"🔔 **[{user_id}]님의 등록된 알림 목록**\n"
+    for alert_id, region, budget, interest_type in alerts:
+        msg += f"- **[알림 번호: {alert_id}]** 지역: {region} | 분야: {interest_type} | 예산: {budget}만원\n"
+    msg += "\n특정 알림을 수정하거나 삭제하시려면 해당 **알림 번호**를 말씀해 주세요! (예: '1번 알림 지워줘')"
+    return json.dumps({"status": "SUCCESS", "message": msg}, ensure_ascii=False)
+
+@mcp.tool(
+    name="CancelNotification",
+    description="유저가 특정 알림 번호(alert_id)의 알림을 취소하거나, 모든 알림을 한 번에 취소하고 싶을 때 사용합니다.",
+    annotations={
+        "title": "SafeHomes 알림 구독 해지",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+def cancel_notification(
+    user_id: Annotated[str, Field(description="알림을 해지할 유저 식별자")] = "임시유저",
+    alert_id: Annotated[int, Field(description="삭제할 특정 알림의 번호. 0일 경우 모든 알림을 삭제합니다.")] = 0
+) -> str:
+    if alert_id > 0:
+        delete_user_alert(alert_id)
+        msg = f"[{user_id}] 님의 {alert_id}번 알림이 정상적으로 해지되었습니다."
+    else:
+        delete_all_alerts(user_id)
+        msg = f"[{user_id}] 님의 모든 부동산 스나이퍼 알림 구독이 영구적으로 해지되었습니다. 축하드립니다! 좋은 매물을 구하셨기를 바랍니다."
+        
+    return json.dumps({"status": "SUCCESS", "message": msg}, ensure_ascii=False)
+
+@mcp.tool(
+    name="GetNotificationGuide",
+    description="유저가 부동산 알림을 어떻게 등록/수정/조회하는지 물어볼 때 사용합니다.",
+    annotations={
+        "title": "SafeHomes 알림 이용 가이드",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+def get_notification_guide() -> str:
+    guide_text = (
+        "🔔 **[세이프홈즈 부동산 스나이퍼 다중 알림 가이드]**\n\n"
+        "원하시는 매물 조건을 카톡에 말씀해 주시면, 서버가 24시간 감시하다가 새 매물이 뜰 때 즉시 카톡을 쏩니다!\n\n"
+        "👇 **이렇게 말씀해 보세요!**\n"
+        "✅ **알림 등록 (여러 개 가능)**\n"
+        "- *\"마포구 공공임대 매물 나오면 알림 보내줘\"*\n"
+        "- *\"추가로 예산 5억 서초구 일반분양도 등록해줘\"*\n\n"
+        "✅ **내 알림 목록 확인**\n"
+        "- *\"내 알림 목록 보여줘\"* (각 알림의 **번호**를 확인할 수 있습니다)\n\n"
+        "✅ **알림 수정 & 삭제 (번호 지정)**\n"
+        "- *\"2번 알림 예산을 6억으로 올려줘\"*\n"
+        "- *\"1번 알림 지워줘\"*\n"
+        "- *\"나 집 구했어. 알림 싹 다 취소해줘\"*\n\n"
+        "지금 바로 원하시는 **지역, 예산, 관심 분야**를 채팅창에 적어주세요!"
+    )
+    return json.dumps({"status": "SUCCESS", "message": guide_text}, ensure_ascii=False)
+
+@mcp.tool(
+    name="ModifyNotification",
+    description="유저가 기존 알림 목록 중 특정 알림 번호(alert_id)의 조건을 수정하고 싶을 때 사용합니다.",
+    annotations={
+        "title": "SafeHomes 알림 조건 변경",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+def modify_notification(
+    user_id: Annotated[str, Field(description="유저 고유 식별자")] = "임시유저",
+    alert_id: Annotated[int, Field(description="수정할 알림의 고유 번호 (모르면 ListMyNotifications 호출)")] = 0,
+    new_region: Annotated[str, Field(description="새로운 타겟 지역. 변경하지 않으려면 빈 문자열('')")] = "",
+    new_budget: Annotated[int, Field(description="새로운 최대 예산. 변경하지 않으려면 0")] = 0,
+    new_interest_type: Annotated[str, Field(description="새로운 관심 분야. 변경하지 않으려면 빈 문자열('')")] = ""
+) -> str:
+    if alert_id <= 0:
+        return json.dumps({"status": "ERROR", "message": "수정할 알림 번호(alert_id)가 지정되지 않았습니다. 먼저 알림 목록을 조회해 주세요."})
+        
+    current_alert = get_specific_alert(alert_id)
+    if not current_alert:
+        return json.dumps({"status": "ERROR", "message": f"입력하신 {alert_id}번 알림을 찾을 수 없습니다."}, ensure_ascii=False)
+        
+    region = new_region if new_region else current_alert[2]
+    budget = new_budget if new_budget > 0 else current_alert[3]
+    interest_type = new_interest_type if new_interest_type else current_alert[4]
+    
+    update_user_alert(alert_id, region, budget, interest_type)
+    return json.dumps({
+        "status": "SUCCESS",
+        "message": f"[{user_id}] 님의 {alert_id}번 알림 조건이 정상적으로 수정되었습니다.\n- 타겟 지역: {region}\n- 관심 분야: {interest_type}\n- 예산 조건: {budget}만 원"
+    }, ensure_ascii=False)
+
+@mcp.tool(
+    name="GetMoreListings",
+    description="유저가 스케줄러가 보내준 매물 3개가 마음에 들지 않아 '다른 매물 보여줘', '더 없어?'라고 할 때 사용하는 롤링(Pagination) 툴입니다.",
+    annotations={
+        "title": "SafeHomes 다음 매물 보기 (롤링)",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True
+    }
+)
+def get_more_listings(
+    user_id: Annotated[str, Field(description="유저 고유 식별자")] = "임시유저",
+    alert_id: Annotated[int, Field(description="더 볼 매물의 알림 번호. 모르면 ListMyNotifications 호출 요망")] = 0
+) -> str:
+    from notification_db import is_notice_sent, mark_notice_sent
+    if alert_id <= 0:
+        return json.dumps({"status": "ERROR", "message": "어떤 조건(알림 번호)의 매물을 더 보고 싶으신지 알림 번호를 지정해 주세요."})
+        
+    current_alert = get_specific_alert(alert_id)
+    if not current_alert:
+        return json.dumps({"status": "ERROR", "message": f"{alert_id}번 알림 조건이 존재하지 않습니다."})
+        
+    region, budget, interest_type = current_alert[2], current_alert[3], current_alert[4]
+    
+    notices = []
+    # 네이버 부동산 스캔
+    if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버"]):
+        notices.extend(public_fetcher.fetch_naver_real_estate(region, budget))
+    # 공공임대 스캔
+    if any(k in interest_type for k in ["공공임대", "LH"]):
+        lh = public_fetcher.fetch_lh_lease_notices(interest_type, region)
+        if lh: notices.extend(lh)
+        
+    # SH 및 공실 스캔
+    if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울"]):
+        sh = public_fetcher.fetch_sh_vacancy_and_plans(region)
+        if sh: notices.extend(sh)
+        
+    # 일반분양 스캔
+    if "분양" in interest_type or "청약" in interest_type:
+        gen = public_fetcher.fetch_general_sales_notices(region)
+        if gen: notices.extend(gen)
+        
+    # 기존에 보여줬던 매물(DB에 저장된 발송 이력) 필터링
+    fresh_notices = []
+    for n in notices:
+        if not is_notice_sent(user_id, n["id"]):
+            fresh_notices.append(n)
+            
+    if not fresh_notices:
+        return json.dumps({
+            "status": "SUCCESS",
+            "message": f"현재 '{region}' 지역에 남아있는 추가 매물이 없습니다. 새로운 매물이 네이버 부동산 등에 올라오는 즉시 스케줄러가 알림으로 쏴드릴 테니 안심하고 기다려주세요!"
+        }, ensure_ascii=False)
+        
+    # 다음 순위 3개 추출 및 발송 처리
+    next_3 = fresh_notices[:3]
+    for n in next_3:
+        mark_notice_sent(user_id, n["id"])
+        
+    msg = f"네! 이전에 보지 못하셨던 **다음 순위 매물 {len(next_3)}개**를 추가로 보여드립니다.\n\n"
+    for idx, n in enumerate(next_3, 1):
+        msg += f"[{idx}] {n['title']}\n🔗 링크: {n['url']}\n\n"
+    msg += "계속 마음에 안 드시면 '다른 매물 또 보여줘'라고 입력하시거나, 새로운 매물이 올라올 때까지 기다려주세요!"
+    
+    return json.dumps({"status": "SUCCESS", "message": msg}, ensure_ascii=False)
 
 app = mcp.streamable_http_app()
 
