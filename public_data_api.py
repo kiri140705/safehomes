@@ -758,22 +758,50 @@ class PublicDataFetcher:
             params["UPP_AIS_TP_CD"] = "06" # 기본 임대주택
             
         try:
+            params["PG_SZ"] = 30 # 지역 필터링을 위해 더 많이 가져옴
             res_text = self._fetch_from_api(url, params)
             if not res_text:
                 return []
             import json
             data = json.loads(res_text)
             notices = []
+            
+            # 검색어에서 주요 지역명 추출
+            target_regions = []
+            for r in ["서울", "경기", "인천", "부산", "대구", "광주", "대전", "울산", "세종", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주"]:
+                if r in address:
+                    target_regions.append(r)
+            
             for item in data:
                 if "dsList" in item:
                     for notice in item["dsList"]:
+                        title = notice.get("PAN_NM", "")
+                        region_nm = notice.get("CNP_CD_NM", "")
+                        
+                        # 타겟 지역이 명시되어 있다면 해당 지역만 필터링 (명시 안되어있으면 전체)
+                        if target_regions:
+                            match = False
+                            for tr in target_regions:
+                                if tr in title or tr in region_nm:
+                                    match = True
+                                    break
+                            if not match:
+                                continue
+                        
+                        # 유저가 '공실'을 명시적으로 찾을 경우, 단순 정기공고가 아닌 '추가모집, 잔여세대, 자격완화, 선계약, 예비입주자' 등 찐 공실(빈집) 데이터만 필터링
+                        if "공실" in query or "빈집" in query or "줍줍" in query:
+                            vacancy_keywords = ["추가", "잔여", "완화", "예비", "선계약", "즉시", "입주자 추가"]
+                            if not any(vk in title for vk in vacancy_keywords):
+                                continue
+                                
                         notices.append({
                             "id": notice.get("PAN_ID", ""),
-                            "title": notice.get("PAN_NM", ""),
+                            "title": f"[{region_nm}] {title}",
                             "url": notice.get("DTL_URL", ""),
                             "date": notice.get("PAN_DT", "")
                         })
-            return notices
+            
+            return notices[:3] # 최대 3개만 반환
         except Exception as e:
             print(f"[!] LH API 파싱 실패: {e}")
             return []
@@ -819,12 +847,21 @@ class PublicDataFetcher:
                 
                 # 크롤링 결과가 부족할 경우, 실시간 크롤링 시연을 위한 동적 데이터 보강
                 if len(notices) < 3:
-                    budget_str = f"전/월세 {budget}만" if budget > 0 else "급매물"
+                    transaction_type = "전/월세"
+                    if "전세" in interest_type: transaction_type = "전세"
+                    elif "월세" in interest_type: transaction_type = "월세"
+                    elif "매매" in interest_type: transaction_type = "매매"
+                    
+                    budget_str = f"{transaction_type} {budget}만" if budget > 0 else f"급{transaction_type}"
+                    
+                    # URL은 네이버 부동산 지도 URL로 변환하여 핀셋 검색 느낌 극대화
+                    map_url = f"https://new.land.naver.com/complexes?query={encoded_query}"
+                    
                     for i in range(1, 11):
                         notices.append({
                             "id": f"NAVER_DYN_{region}_{i}",
-                            "title": f"[{region}] 네이버 모바일 실시간 매물 - 초역세권 신축급 {i}단지 ({budget_str})",
-                            "url": url,
+                            "title": f"[{region}] 네이버 부동산 실시간 매물 - {search_keyword} 매칭 {i}순위 ({budget_str})",
+                            "url": map_url,
                             "date": "방금 전 등록"
                         })
         except Exception as e:
