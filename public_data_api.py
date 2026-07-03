@@ -778,12 +778,14 @@ class PublicDataFetcher:
             print(f"[!] LH API 파싱 실패: {e}")
             return []
 
-    def fetch_naver_real_estate(self, region: str, budget: int):
+    def fetch_naver_real_estate(self, region: str, budget: int, interest_type: str = ""):
         """네이버 모바일 통합검색 기반 부동산 매물 실시간 크롤러 (리얼 스크립트)"""
         import urllib.parse
         from bs4 import BeautifulSoup
         
-        query = f"{region} 아파트 매물"
+        # interest_type에 구체적 조건(예: '20평 이상 아파트 전세')이 있다면 쿼리에 병합하여 네이버 검색 정확도를 극대화
+        search_keyword = interest_type if interest_type and interest_type != "공공임대" else "아파트 매물"
+        query = f"{region} {search_keyword}"
         encoded_query = urllib.parse.quote(query)
         url = f"https://m.search.naver.com/search.naver?query={encoded_query}"
         
@@ -811,7 +813,7 @@ class PublicDataFetcher:
                             notices.append({
                                 "id": f"NAVER_REAL_{region}_{i}",
                                 "title": title,
-                                "url": f"https://m.land.naver.com/search/result/{urllib.parse.quote(region)}",
+                                "url": url,
                                 "date": "실시간 크롤링"
                             })
                 
@@ -822,7 +824,7 @@ class PublicDataFetcher:
                         notices.append({
                             "id": f"NAVER_DYN_{region}_{i}",
                             "title": f"[{region}] 네이버 모바일 실시간 매물 - 초역세권 신축급 {i}단지 ({budget_str})",
-                            "url": f"https://m.land.naver.com/search/result/{urllib.parse.quote(region)}",
+                            "url": url,
                             "date": "방금 전 등록"
                         })
         except Exception as e:

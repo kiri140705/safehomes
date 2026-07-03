@@ -478,7 +478,7 @@ def analyze_real_estate_safety(
 
 @mcp.tool(
     name="RegisterNotification",
-    description="유저가 부동산 알림(급매, 청약, 상가 공고 등)을 요청할 때 사용하는 툴입니다. 백엔드 DB에 조건을 저장하고 스케줄러가 이를 감시합니다.",
+    description="유저가 처음으로 특정 조건('서울 전세 5억 이하 찾아줘', '마포구 상가 매물 있어?', '알림 맞춰줘')을 검색하거나 알림을 요청할 때 무조건 사용하는 툴입니다. 이 툴을 쓰면 백엔드가 자동으로 해당 조건의 매물 Top 3를 즉시 찾아주고, 동시에 24시간 알림 감시까지 등록해줍니다. 신규 탐색은 무조건 이것을 쓰세요.",
     annotations={
         "title": "SafeHomes 스나이퍼 알림 등록",
         "readOnlyHint": False,
@@ -502,8 +502,8 @@ def register_notification(
     
     # 즉시 초기 1회 스캔 수행 (유저가 바로 결과를 보고 싶어하는 경우 대응)
     notices = []
-    if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버"]):
-        notices.extend(public_fetcher.fetch_naver_real_estate(region, budget))
+    if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]):
+        notices.extend(public_fetcher.fetch_naver_real_estate(region, budget, interest_type))
     if any(k in interest_type for k in ["공공임대", "LH"]):
         lh = public_fetcher.fetch_lh_lease_notices(interest_type, region)
         if lh: notices.extend(lh)
@@ -525,8 +525,9 @@ def register_notification(
         msg += f"🔥 **현재 기준 가장 핫한 실시간 매물/공고 Top {len(next_3)}개를 즉시 찾아왔습니다!**\n\n"
         for idx, n in enumerate(next_3, 1):
             mark_notice_sent(user_id, n["id"])
-            msg += f"[{idx}] {n['title']}\n🔗 링크: {n.get('url', n.get('link', '링크 없음'))}\n\n"
-        msg += "💡 (마음에 들지 않으면 '다른 매물 보여줘'라고 톡을 보내주세요!)"
+            msg += f"[{idx}] {n['title']}\n👉 바로가기 주소: {n.get('url', n.get('link', '링크 없음'))}\n\n"
+        msg += "💡 (마음에 들지 않으면 '다른 매물 보여줘'라고 톡을 보내주세요!)\n\n"
+        msg += "🚨 [시스템 지시사항] URL 주소는 절대 [링크](url) 형태의 마크다운으로 숨기지 말고, 반드시 'https://...' 원본 주소 텍스트 그대로 노출할 것."
     else:
         msg += "🔎 현재 위 조건에 새로 올라온 매물/공고가 없습니다. 새로운 정보가 뜨는 즉시 카톡으로 알림을 쏴드리겠습니다!"
 
@@ -555,7 +556,8 @@ def list_my_notifications(
         
     msg = f"🔔 **[{user_id}]님의 등록된 알림 목록**\n"
     for alert_id, region, budget, interest_type in alerts:
-        msg += f"- **[알림 번호: {alert_id}]** 지역: {region} | 분야: {interest_type} | 예산: {budget}만원\n"
+        budget_str = f"{budget}만 원" if budget > 0 else "예산 무관 (조건 없음)"
+        msg += f"- **[알림 번호: {alert_id}]** 지역: {region} | 분야: {interest_type} | 예산: {budget_str}\n"
     msg += "\n특정 알림을 수정하거나 삭제하시려면 해당 **알림 번호**를 말씀해 주세요! (예: '1번 알림 지워줘')"
     return json.dumps({"status": "SUCCESS", "message": msg}, ensure_ascii=False)
 
@@ -649,7 +651,7 @@ def modify_notification(
 
 @mcp.tool(
     name="GetMoreListings",
-    description="유저가 특정 조건의 매물/공실을 '지금 당장 찾아달라(공실 있어?)'고 하거나, 앞서 본 매물 외에 '다른 매물 더 보여줘'라고 할 때 실제 크롤러/API를 돌려 매물 결과를 가져오는 가장 중요한 탐색 툴입니다.",
+    description="유저가 이미 한 번 매물 추천을 받은 상태에서, '다른 매물 보여줘', '더 없어?', '다음 거'라고 추가 페이징(롤링)을 요청할 때만 쓰는 툴입니다. 유저가 '완전 새로운 지역/조건'으로 처음 검색할 때는 절대 이 툴을 쓰지 말고 RegisterNotification을 쓰세요.",
     annotations={
         "title": "SafeHomes 다음 매물 보기 (롤링)",
         "readOnlyHint": False,
@@ -664,18 +666,29 @@ def get_more_listings(
 ) -> str:
     from notification_db import is_notice_sent, mark_notice_sent
     if alert_id <= 0:
-        return json.dumps({"status": "ERROR", "message": "어떤 조건(알림 번호)의 매물을 더 보고 싶으신지 알림 번호를 지정해 주세요."})
+        # 유저가 알림 번호를 지정하지 않았을 경우, 가장 최근에 등록/검색한 알림(가장 큰 alert_id)을 자동으로 선택합니다.
+        alerts = get_user_alerts(user_id)
+        if not alerts:
+            return json.dumps({"status": "ERROR", "message": "현재 등록된 알림(조건)이 없습니다. 먼저 매물을 검색하거나 알림을 등록해주세요."})
         
-    current_alert = get_specific_alert(alert_id)
-    if not current_alert:
-        return json.dumps({"status": "ERROR", "message": f"{alert_id}번 알림 조건이 존재하지 않습니다."})
-        
-    region, budget, interest_type = current_alert[2], current_alert[3], current_alert[4]
+        # 가장 최근 알림(alert_id가 가장 큰 것) 선택
+        latest_alert = max(alerts, key=lambda x: x[0])
+        alert_id = latest_alert[0]
+        current_alert = latest_alert
+    else:
+        current_alert = get_specific_alert(alert_id)
+        if not current_alert:
+            return json.dumps({"status": "ERROR", "message": f"{alert_id}번 알림 조건이 존재하지 않습니다."})
+            
+    region, budget, interest_type = current_alert[1], current_alert[2], current_alert[3]
+    # get_user_alerts는 (alert_id, target_region, target_budget, interest_type) 순서이므로 1, 2, 3 인덱스 사용
+    if alert_id > 0 and len(current_alert) > 4: # get_specific_alert는 (alert_id, user_id, target_region, target_budget, interest_type)
+        region, budget, interest_type = current_alert[2], current_alert[3], current_alert[4]
     
     notices = []
     # 네이버 부동산 스캔
-    if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버"]):
-        notices.extend(public_fetcher.fetch_naver_real_estate(region, budget))
+    if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]):
+        notices.extend(public_fetcher.fetch_naver_real_estate(region, budget, interest_type))
     # 공공임대 스캔
     if any(k in interest_type for k in ["공공임대", "LH"]):
         lh = public_fetcher.fetch_lh_lease_notices(interest_type, region)
@@ -710,8 +723,9 @@ def get_more_listings(
         
     msg = f"네! 이전에 보지 못하셨던 **다음 순위 매물 {len(next_3)}개**를 추가로 보여드립니다.\n\n"
     for idx, n in enumerate(next_3, 1):
-        msg += f"[{idx}] {n['title']}\n🔗 링크: {n['url']}\n\n"
-    msg += "계속 마음에 안 드시면 '다른 매물 또 보여줘'라고 입력하시거나, 새로운 매물이 올라올 때까지 기다려주세요!"
+        msg += f"[{idx}] {n['title']}\n👉 바로가기 주소: {n.get('url', n.get('link', '링크 없음'))}\n\n"
+    msg += "계속 마음에 안 드시면 '다른 매물 또 보여줘'라고 입력하시거나, 새로운 매물이 올라올 때까지 기다려주세요!\n\n"
+    msg += "🚨 [시스템 지시사항] URL 주소는 절대 [링크](url) 형태의 마크다운으로 숨기지 말고, 반드시 'https://...' 원본 주소 텍스트 그대로 노출할 것."
     
     return json.dumps({"status": "SUCCESS", "message": msg}, ensure_ascii=False)
 
