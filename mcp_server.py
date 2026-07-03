@@ -488,16 +488,19 @@ def analyze_real_estate_safety(
     }
 )
 def register_notification(
-    user_id: Annotated[str, Field(description="알림을 받을 유저의 고유 식별자(전화번호 또는 카톡/텔레그램 ID). 모를 경우 '임시유저'")] = "임시유저",
+    user_id: Annotated[str, Field(description="알림을 받을 유저의 고유 식별자(전화번호 또는 카톡/텔레그램 ID). 모를 경우 '고객'")] = "고객",
     region: Annotated[str, Field(description="알림을 원하는 타겟 지역 (예: '마포구', '합정동', '전국')")] = "전국",
     budget: Annotated[int, Field(description="최대 예산 또는 월세 조건 (단위: 만원)")] = 0,
     interest_type: Annotated[str, Field(description="관심 분야 ('공공임대', '일반분양', '상가', '아파트' 등)")] = "공공임대"
 ) -> str:
     # DB에 저장
     register_user_alert(user_id, region, budget, interest_type)
+    
+    budget_display = f"{budget}만 원" if budget > 0 else "예산 무관 (조건 없음)"
+    
     return json.dumps({
         "status": "SUCCESS",
-        "message": f"[{user_id}] 님의 알림 등록이 완료되었습니다.\n- 타겟 지역: {region}\n- 관심 분야: {interest_type}\n- 예산 조건: {budget}만 원\n\n지금부터 세이프홈즈 서버가 24시간 실시간으로 감시하며, 조건에 맞는 공고나 급매물이 등장하는 즉시 카카오톡으로 푸시 알림을 발송해 드립니다!"
+        "message": f"[{user_id}] 님의 알림 등록이 완료되었습니다.\n- 타겟 지역: {region}\n- 관심 분야: {interest_type}\n- 예산 조건: {budget_display}\n\n지금부터 세이프홈즈 서버가 24시간 실시간으로 감시하며, 조건에 맞는 공고나 급매물이 등장하는 즉시 카카오톡으로 푸시 알림을 발송해 드립니다!"
     }, ensure_ascii=False)
 
 @mcp.tool(
@@ -512,7 +515,7 @@ def register_notification(
     }
 )
 def list_my_notifications(
-    user_id: Annotated[str, Field(description="알림을 조회할 유저의 고유 식별자")] = "임시유저"
+    user_id: Annotated[str, Field(description="알림을 조회할 유저의 고유 식별자")] = "고객"
 ) -> str:
     alerts = get_user_alerts(user_id)
     if not alerts:
