@@ -565,9 +565,9 @@ def list_my_notifications(
 
 @mcp.tool(
     name="CancelNotification",
-    description="유저가 특정 알림 번호(alert_id)의 알림을 취소하거나, 모든 알림을 한 번에 취소하고 싶을 때 사용합니다.",
+    description="[중요] 유저가 특정 알림 번호(alert_id)의 알림을 '삭제', '취소', '해지', '지워줘'라고 요청할 때 무조건 이 툴을 사용합니다. 절대 '삭제 기능이 지원되지 않는다'고 대답하지 말고 이 툴을 호출하세요.",
     annotations={
-        "title": "SafeHomes 알림 구독 해지",
+        "title": "SafeHomes 알림 삭제/해지",
         "readOnlyHint": False,
         "destructiveHint": True,
         "idempotentHint": True,
@@ -575,15 +575,18 @@ def list_my_notifications(
     }
 )
 def cancel_notification(
-    user_id: Annotated[str, Field(description="알림을 해지할 유저 식별자")] = "임시유저",
-    alert_id: Annotated[int, Field(description="삭제할 특정 알림의 번호. 0일 경우 모든 알림을 삭제합니다.")] = 0
+    user_id: Annotated[str, Field(description="알림을 삭제/해지할 유저 식별자")] = "고객",
+    alert_id: Annotated[int, Field(description="삭제할 특정 알림의 고유 번호(예: 3). 특정 알림 삭제 시 필수입니다.")] = -1,
+    is_all: Annotated[bool, Field(description="모든 알림을 한 번에 전체 삭제하고 싶을 경우에만 true로 설정합니다.")] = False
 ) -> str:
-    if alert_id > 0:
-        delete_user_alert(alert_id)
-        msg = f"[{user_id}] 님의 {alert_id}번 알림이 정상적으로 해지되었습니다."
-    else:
+    if is_all:
         delete_all_alerts(user_id)
-        msg = f"[{user_id}] 님의 모든 부동산 스나이퍼 알림 구독이 영구적으로 해지되었습니다. 축하드립니다! 좋은 매물을 구하셨기를 바랍니다."
+        msg = f"[{user_id}] 님의 모든 부동산 스나이퍼 알림 구독이 영구적으로 해지(전체 삭제)되었습니다. 축하드립니다! 좋은 매물을 구하셨기를 바랍니다."
+    elif alert_id > 0:
+        delete_user_alert(alert_id)
+        msg = f"[{user_id}] 님의 {alert_id}번 알림이 정상적으로 삭제(해지)되었습니다."
+    else:
+        msg = "몇 번 알림을 삭제하시겠습니까? 알림 번호를 정확히 숫자로 입력해주세요. (예: 3번 알림 삭제해줘)"
         
     return json.dumps({"status": "SUCCESS", "message": msg}, ensure_ascii=False)
 
