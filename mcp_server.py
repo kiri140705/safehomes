@@ -383,7 +383,7 @@ def analyze_real_estate_safety(
         if intent == "상가 임대 및 권리금 상권분석":
             # 카카오 LLM이 business_type을 추출하지 못했을 경우를 대비한 2차 안전장치
             if not actual_business_type:
-                for k in ["고기", "삼겹살", "회", "일식", "술집", "호프", "맥주", "유흥", "카페", "커피", "디저트", "국밥", "분식", "식당", "아이스크림", "무인", "밀키트", "코인노래방"]:
+                for k in ["고기", "고깃", "삼겹살", "회", "일식", "술집", "호프", "맥주", "유흥", "카페", "커피", "디저트", "국밥", "분식", "식당", "아이스크림", "무인", "밀키트", "코인노래방"]:
                     if k in user_query:
                         actual_business_type = k
                         break
@@ -498,14 +498,46 @@ def register_notification(
     
     budget_display = f"{budget}만 원" if budget > 0 else "예산 무관 (조건 없음)"
     
+    msg = f"[{user_id}] 님의 알림 등록이 완료되었습니다.\n- 타겟 지역: {region}\n- 관심 분야: {interest_type}\n- 예산 조건: {budget_display}\n\n지금부터 24시간 실시간 감시를 시작합니다.\n\n"
+    
+    # 즉시 초기 1회 스캔 수행 (유저가 바로 결과를 보고 싶어하는 경우 대응)
+    notices = []
+    if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버"]):
+        notices.extend(public_fetcher.fetch_naver_real_estate(region, budget))
+    if any(k in interest_type for k in ["공공임대", "LH"]):
+        lh = public_fetcher.fetch_lh_lease_notices(interest_type, region)
+        if lh: notices.extend(lh)
+    if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울"]):
+        sh = public_fetcher.fetch_sh_vacancy_and_plans(region)
+        if sh: notices.extend(sh)
+    if "분양" in interest_type or "청약" in interest_type:
+        gen = public_fetcher.fetch_general_sales_notices(region)
+        if gen: notices.extend(gen)
+        
+    from notification_db import is_notice_sent, mark_notice_sent
+    fresh_notices = []
+    for n in notices:
+        if not is_notice_sent(user_id, n["id"]):
+            fresh_notices.append(n)
+            
+    if fresh_notices:
+        next_3 = fresh_notices[:3]
+        msg += f"🔥 **현재 기준 가장 핫한 실시간 매물/공고 Top {len(next_3)}개를 즉시 찾아왔습니다!**\n\n"
+        for idx, n in enumerate(next_3, 1):
+            mark_notice_sent(user_id, n["id"])
+            msg += f"[{idx}] {n['title']}\n🔗 링크: {n.get('url', n.get('link', '링크 없음'))}\n\n"
+        msg += "💡 (마음에 들지 않으면 '다른 매물 보여줘'라고 톡을 보내주세요!)"
+    else:
+        msg += "🔎 현재 위 조건에 새로 올라온 매물/공고가 없습니다. 새로운 정보가 뜨는 즉시 카톡으로 알림을 쏴드리겠습니다!"
+
     return json.dumps({
         "status": "SUCCESS",
-        "message": f"[{user_id}] 님의 알림 등록이 완료되었습니다.\n- 타겟 지역: {region}\n- 관심 분야: {interest_type}\n- 예산 조건: {budget_display}\n\n지금부터 세이프홈즈 서버가 24시간 실시간으로 감시하며, 조건에 맞는 공고나 급매물이 등장하는 즉시 카카오톡으로 푸시 알림을 발송해 드립니다!"
+        "message": msg
     }, ensure_ascii=False)
 
 @mcp.tool(
     name="ListMyNotifications",
-    description="유저가 현재 등록해둔 알림 목록을 확인하고 싶을 때 사용합니다. 유저가 알림을 수정/취소하기 전 알림 번호(alert_id)를 확인할 때 필수적으로 먼저 호출해야 합니다.",
+    description="유저가 자신이 등록한 '알림 조건 목록(리스트)' 자체를 보고 싶어할 때만 사용합니다. (예: '내 알림 목록 보여줘', '내가 뭐뭐 등록했지?'). 🚨주의: 유저가 '매물 찾아줘', '공실 있어?' 라고 실제 매물을 물어볼 때는 절대 이 툴을 쓰지 마세요. 그럴 땐 GetMoreListings를 쓰세요.",
     annotations={
         "title": "SafeHomes 내 알림 목록 조회",
         "readOnlyHint": True,
@@ -617,7 +649,7 @@ def modify_notification(
 
 @mcp.tool(
     name="GetMoreListings",
-    description="유저가 스케줄러가 보내준 매물 3개가 마음에 들지 않아 '다른 매물 보여줘', '더 없어?'라고 할 때 사용하는 롤링(Pagination) 툴입니다.",
+    description="유저가 특정 조건의 매물/공실을 '지금 당장 찾아달라(공실 있어?)'고 하거나, 앞서 본 매물 외에 '다른 매물 더 보여줘'라고 할 때 실제 크롤러/API를 돌려 매물 결과를 가져오는 가장 중요한 탐색 툴입니다.",
     annotations={
         "title": "SafeHomes 다음 매물 보기 (롤링)",
         "readOnlyHint": False,

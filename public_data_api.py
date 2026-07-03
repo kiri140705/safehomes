@@ -943,7 +943,7 @@ class PublicDataFetcher:
         table_ticket_size = 30000 # 기본 테이블 단가 3만 원
         cogs_rate = 0.35
         
-        if any(k in business_type for k in ["고기", "삼겹살", "회", "일식"]):
+        if any(k in business_type for k in ["고기", "고깃", "삼겹살", "회", "일식"]):
             table_ticket_size = 80000  # 고깃집 7~10만 원
             cogs_rate = 0.40
         elif any(k in business_type for k in ["술집", "호프", "맥주", "유흥"]):
@@ -1030,7 +1030,7 @@ class PublicDataFetcher:
                 point = data["response"]["result"]["point"]
                 cx, cy = float(point["x"]), float(point["y"])
                 
-                inds_cd = "I2" if any(k in business_type for k in ["고기", "카페", "커피", "식당", "음식", "술집", "호프", "국밥", "치킨"]) else ""
+                inds_cd = "I2" if any(k in business_type for k in ["고기", "고깃", "카페", "커피", "식당", "음식", "술집", "호프", "국밥", "치킨"]) else ""
                 url_stores = "http://apis.data.go.kr/B553077/api/open/sdsc2/storeListInRadius"
                 params_stores = {
                     "serviceKey": self.portal_api_key, "radius": 500, "cx": cx, "cy": cy, "type": "json"
@@ -1067,7 +1067,7 @@ class PublicDataFetcher:
 
             # 1. 업종별 기본 베이스 매출 및 경쟁점 세팅 (API 데이터가 없을 경우 Fallback)
             # 고단가/대형 식당 (고깃집, 치킨, 호프 등) 특별 타겟팅
-            is_heavy_food = any(k in business_type for k in ["고기", "삼겹살", "치킨", "호프", "맥주", "횟집", "일식"])
+            is_heavy_food = any(k in business_type for k in ["고기", "고깃", "삼겹살", "치킨", "호프", "맥주", "횟집", "일식"])
             is_light_food = any(k in business_type for k in ["카페", "커피", "디저트", "분식", "김밥"])
 
             if is_heavy_food:
