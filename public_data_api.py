@@ -794,9 +794,15 @@ class PublicDataFetcher:
                             if not any(vk in title for vk in vacancy_keywords):
                                 continue
                                 
+                        title_with_region = f"[{region_nm}] {title}"
+                        
+                        # 중복 공고(타이틀 동일) 제거
+                        if any(n["title"] == title_with_region for n in notices):
+                            continue
+                            
                         notices.append({
                             "id": notice.get("PAN_ID", ""),
-                            "title": f"[{region_nm}] {title}",
+                            "title": title_with_region,
                             "url": notice.get("DTL_URL", ""),
                             "date": notice.get("PAN_DT", "")
                         })
@@ -848,14 +854,32 @@ class PublicDataFetcher:
                 # 크롤링 결과가 부족할 경우, 실시간 크롤링 시연을 위한 동적 데이터 보강
                 if len(notices) < 3:
                     transaction_type = "전/월세"
-                    if "전세" in interest_type: transaction_type = "전세"
-                    elif "월세" in interest_type: transaction_type = "월세"
-                    elif "매매" in interest_type: transaction_type = "매매"
+                    b_val = "A1:B1:B2"
+                    if "전세" in interest_type: 
+                        transaction_type = "전세"
+                        b_val = "B1"
+                    elif "월세" in interest_type: 
+                        transaction_type = "월세"
+                        b_val = "B2"
+                    elif "매매" in interest_type: 
+                        transaction_type = "매매"
+                        b_val = "A1"
+                        
+                    a_val = "APT:OPST:VL:OR:ABYG:OBYG:GM:TJ:GSM:SGC:NW:SG:CMPT"
+                    if "아파트" in interest_type: a_val = "APT:ABYG:JGC"
+                    elif "오피스텔" in interest_type: a_val = "OPST:OBYG"
+                    elif "빌라" in interest_type or "다세대" in interest_type: a_val = "VL"
+                    elif "원룸" in interest_type: a_val = "OR"
+                    elif "상가" in interest_type: a_val = "SG:SGC"
                     
                     budget_str = f"{transaction_type} {budget}만" if budget > 0 else f"급{transaction_type}"
                     
+                    filter_params = f"&a={a_val}&b={b_val}&e=RETAIL"
+                    if budget > 0:
+                        filter_params += f"&ep={budget}"
+                    
                     # URL은 네이버 부동산 지도 URL로 변환하여 핀셋 검색 느낌 극대화
-                    map_url = f"https://new.land.naver.com/complexes?query={encoded_query}"
+                    map_url = f"https://new.land.naver.com/complexes?query={encoded_query}{filter_params}"
                     
                     for i in range(1, 11):
                         notices.append({

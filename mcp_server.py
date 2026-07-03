@@ -478,7 +478,7 @@ def analyze_real_estate_safety(
 
 @mcp.tool(
     name="RegisterNotification",
-    description="유저가 처음으로 특정 조건('서울 전세 5억 이하 찾아줘', '마포구 상가 매물 있어?', '알림 맞춰줘')을 검색하거나 알림을 요청할 때 무조건 사용하는 툴입니다. 이 툴을 쓰면 백엔드가 자동으로 해당 조건의 매물 Top 3를 즉시 찾아주고, 동시에 24시간 알림 감시까지 등록해줍니다. 신규 탐색은 무조건 이것을 쓰세요.",
+    description="[매우 중요] 유저가 처음으로 '서울 전세 5억 이하 찾아줘', '마포구 상가 매물 있어?', '공실 없어?', '공고 없어?' 와 같이 최초로 매물 유무를 묻거나 알림을 요청할 때 무조건 1순위로 사용하는 툴입니다. 이 툴을 쓰면 백엔드가 자동으로 해당 조건의 매물 Top 3를 즉시 찾아주고 동시에 24시간 알림 감시까지 등록해주므로, 유저가 매물을 물어보면 무조건 이것부터 쓰세요.",
     annotations={
         "title": "SafeHomes 스나이퍼 알림 등록",
         "readOnlyHint": False,
@@ -656,7 +656,7 @@ def modify_notification(
 
 @mcp.tool(
     name="GetMoreListings",
-    description="유저가 이미 한 번 매물 추천을 받은 상태에서, '다른 매물 보여줘', '더 없어?', '다음 거'라고 추가 페이징(롤링)을 요청할 때만 쓰는 툴입니다. 유저가 '완전 새로운 지역/조건'으로 처음 검색할 때는 절대 이 툴을 쓰지 말고 RegisterNotification을 쓰세요.",
+    description="[주의] 유저가 '다른 매물 보여줘', '더 없어?' 처럼 **아무 조건 없이** 단순히 '다음 페이지'를 요구할 때만 쓰세요. 만약 유저가 '파주 30평 아파트 찾아줘' 처럼 새로운 지역명이나 구체적인 조건을 말하며 질문했다면 절대로 이 툴을 쓰지 말고 무조건 RegisterNotification 툴을 호출하세요!!",
     annotations={
         "title": "SafeHomes 다음 매물 보기 (롤링)",
         "readOnlyHint": False,
