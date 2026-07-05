@@ -6,8 +6,6 @@ DB_PATH = "safehomes_notifications.db"
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # 기존 테이블 폭파 (1:1 -> 1:N 마이그레이션을 위해 개발 단계 임시 처리)
-    cursor.execute('DROP TABLE IF EXISTS user_alerts')
     
     # 1:N 다중 알림 조건 테이블 생성 (alert_id 도입)
     cursor.execute('''

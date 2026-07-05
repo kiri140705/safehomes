@@ -521,17 +521,24 @@ def register_notification(
             fresh_notices.append(n)
             
     if fresh_notices:
-        next_3 = fresh_notices[:3]
-        msg += f"🔥 **현재 기준 가장 핫한 실시간 매물/공고 Top {len(next_3)}개를 즉시 찾아왔습니다!**\n\n"
-        for idx, n in enumerate(next_3, 1):
+        # 공공임대는 귀하므로 최대 10개까지, 민간 매물은 카톡 UI 방지를 위해 3개까지만 노출
+        display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3
+        next_items = fresh_notices[:display_limit]
+        
+        msg += f"🔥 **현재 기준 가장 핫한 실시간 매물/공고 Top {len(next_items)}개를 즉시 찾아왔습니다!**\n\n"
+        for idx, n in enumerate(next_items, 1):
             mark_notice_sent(user_id, n["id"])
             msg += f"[{idx}] {n['title']}\n👉 바로가기 주소: {n.get('url', n.get('link', '링크 없음'))}\n\n"
-        msg += "💡 (마음에 들지 않으면 '다른 매물 보여줘'라고 톡을 보내주세요!)\n\n"
-        msg += "🚨 [시스템 지시사항] URL 주소는 절대 [링크](url) 형태의 마크다운으로 숨기지 말고, 반드시 'https://...' 원본 주소 텍스트 그대로 노출할 것."
+        
+        if len(fresh_notices) > display_limit:
+            msg += "💡 (아직 보여드리지 않은 매물이 더 있습니다. 다른 매물을 원하시면 '다른 매물 보여줘'라고 입력하세요!)\n\n"
+        else:
+            msg += "💡 (현재 남은 매물을 모두 보여드렸습니다! 새로운 매물이 올라오면 알림을 드릴게요.)\n\n"
+            
+        # 카카오톡 링크 마크다운 처리 지시문 (LLM에게 주는 프롬프트지만 사용자 노출 최소화)
+        msg += "※ 링크(URL)는 클릭 가능하도록 원본 주소 그대로 출력되었습니다."
     else:
         msg += "🔎 현재 위 조건에 새로 올라온 매물/공고가 없습니다. 새로운 정보가 뜨는 즉시 카톡으로 알림을 쏴드리겠습니다!"
-
-    msg += "\n\n🚨 [시스템 절대 지시사항] 너는 카카오 챗봇이다. 유저에게 제공된 이 message 내용의 형식을 멋대로 바꾸거나 요약하지 마라. 인삿말이나 부가 설명을 덧붙이지 말고, 위 텍스트를 토씨 하나 틀리지 않고 100% 그대로 복사해서 출력해라."
 
     return json.dumps({
         "status": "SUCCESS",
@@ -582,8 +589,8 @@ def cancel_notification(
     if is_all:
         delete_all_alerts(user_id)
         msg = f"[{user_id}] 님의 모든 부동산 스나이퍼 알림 구독이 영구적으로 해지(전체 삭제)되었습니다. 축하드립니다! 좋은 매물을 구하셨기를 바랍니다."
-    elif alert_id > 0:
-        delete_user_alert(alert_id)
+    elif int(alert_id) > 0:
+        delete_user_alert(int(alert_id))
         msg = f"[{user_id}] 님의 {alert_id}번 알림이 정상적으로 삭제(해지)되었습니다."
     else:
         msg = "몇 번 알림을 삭제하시겠습니까? 알림 번호를 정확히 숫자로 입력해주세요. (예: 3번 알림 삭제해줘)"
@@ -721,16 +728,23 @@ def get_more_listings(
             "message": f"현재 '{region}' 지역에 남아있는 추가 매물이 없습니다. 새로운 매물이 네이버 부동산 등에 올라오는 즉시 스케줄러가 알림으로 쏴드릴 테니 안심하고 기다려주세요!"
         }, ensure_ascii=False)
         
-    # 다음 순위 3개 추출 및 발송 처리
-    next_3 = fresh_notices[:3]
-    for n in next_3:
+    # 공공임대는 귀하므로 최대 10개까지, 민간 매물은 카톡 UI 방지를 위해 3개까지만 노출
+    display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3
+    next_items = fresh_notices[:display_limit]
+    
+    for n in next_items:
         mark_notice_sent(user_id, n["id"])
         
-    msg = f"네! 이전에 보지 못하셨던 **다음 순위 매물 {len(next_3)}개**를 추가로 보여드립니다.\n\n"
-    for idx, n in enumerate(next_3, 1):
+    msg = f"네! 이전에 보지 못하셨던 **다음 순위 매물 {len(next_items)}개**를 추가로 보여드립니다.\n\n"
+    for idx, n in enumerate(next_items, 1):
         msg += f"[{idx}] {n['title']}\n👉 바로가기 주소: {n.get('url', n.get('link', '링크 없음'))}\n\n"
-    msg += "계속 마음에 안 드시면 '다른 매물 또 보여줘'라고 입력하시거나, 새로운 매물이 올라올 때까지 기다려주세요!\n\n"
-    msg += "🚨 [시스템 지시사항] URL 주소는 절대 [링크](url) 형태의 마크다운으로 숨기지 말고, 반드시 'https://...' 원본 주소 텍스트 그대로 노출할 것."
+        
+    if len(fresh_notices) > display_limit:
+        msg += "💡 (아직 보여드리지 않은 매물이 더 있습니다. 다른 매물을 원하시면 '다른 매물 보여줘'라고 입력하세요!)\n\n"
+    else:
+        msg += "💡 (현재 남은 매물을 모두 보여드렸습니다! 새로운 매물이 올라오면 알림을 드릴게요.)\n\n"
+        
+    msg += "※ 링크(URL)는 클릭 가능하도록 원본 주소 그대로 출력되었습니다."
     
     return json.dumps({"status": "SUCCESS", "message": msg}, ensure_ascii=False)
 
