@@ -43,6 +43,10 @@ async def notification_worker():
                     sh_data = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
                     if sh_data: notices.extend(sh_data)
                         
+                if "실거래" in interest_type:
+                    rtms_data = public_fetcher.fetch_real_transaction_prices(region, interest_type, budget)
+                    if rtms_data: notices.extend(rtms_data)
+                        
                 # 3. 새로운 공고인지 검사
                 for notice in notices:
                     notice_id = notice["id"]

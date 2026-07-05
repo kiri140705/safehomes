@@ -36,8 +36,10 @@ def register_user_alert(user_id, region, budget, interest_type):
         INSERT INTO user_alerts (user_id, target_region, target_budget, interest_type)
         VALUES (?, ?, ?, ?)
     ''', (user_id, region, budget, interest_type))
+    alert_id = cursor.lastrowid
     conn.commit()
     conn.close()
+    return alert_id
 
 def get_all_alerts_for_scanner():
     """스케줄러가 스캔할 때 쓸 전체 알림 리스트 반환"""

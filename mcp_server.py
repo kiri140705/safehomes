@@ -491,10 +491,10 @@ def register_notification(
     user_id: Annotated[str, Field(description="알림을 받을 유저의 고유 식별자(전화번호 또는 카톡/텔레그램 ID). 모를 경우 '고객'")] = "고객",
     region: Annotated[str, Field(description="알림을 원하는 타겟 지역 (예: '마포구', '합정동', '전국')")] = "전국",
     budget: Annotated[int, Field(description="최대 예산 또는 월세 조건 (단위: 만원)")] = 0,
-    interest_type: Annotated[str, Field(description="관심 분야 ('공공임대', '일반분양', '상가', '아파트' 등)")] = "공공임대"
+    interest_type: Annotated[str, Field(description="관심 분야 ('공공임대', '일반분양', '상가', '아파트', '실거래가' 등)")] = "공공임대"
 ) -> str:
     # DB에 저장
-    register_user_alert(user_id, region, budget, interest_type)
+    alert_id = register_user_alert(user_id, region, budget, interest_type)
     
     budget_display = f"{budget}만 원" if budget > 0 else "예산 무관 (조건 없음)"
     
@@ -514,6 +514,10 @@ def register_notification(
         gen = public_fetcher.fetch_general_sales_notices(region)
         if gen: notices.extend(gen)
         
+    if "실거래" in interest_type:
+        rtms = public_fetcher.fetch_real_transaction_prices(region, interest_type, budget)
+        if rtms: notices.extend(rtms)
+        
     from notification_db import is_notice_sent, mark_notice_sent
     
     # 모든 크롤링된 매물을 DB에 저장하여 스케줄러가 중복 발송하지 않게 차단
@@ -528,7 +532,8 @@ def register_notification(
         # 공공임대는 귀하므로 최대 10개까지, 민간 매물은 카톡 UI 방지를 위해 3개까지만 노출
         display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3
         
-        USER_UI_CURSOR[user_id] = min(display_limit, len(notices))
+        # 유저명 대신 alert_id 단위로 커서를 독립적으로 보관하여 혼선을 막음
+        USER_UI_CURSOR[str(alert_id)] = min(display_limit, len(notices))
         next_items = notices[:display_limit]
         
         msg += f"🔥 **현재 기준 가장 핫한 실시간 매물/공고 Top {len(next_items)}개를 즉시 찾아왔습니다!**\n\n"
@@ -643,7 +648,7 @@ def get_notification_guide() -> str:
     }
 )
 def modify_notification(
-    user_id: Annotated[str, Field(description="유저 고유 식별자")] = "임시유저",
+    user_id: Annotated[str, Field(description="유저 고유 식별자(전화번호 또는 카톡/텔레그램 ID). 모를 경우 '고객'")] = "고객",
     alert_id: Annotated[int, Field(description="수정할 알림의 고유 번호 (모르면 ListMyNotifications 호출)")] = 0,
     new_region: Annotated[str, Field(description="새로운 타겟 지역. 변경하지 않으려면 빈 문자열('')")] = "",
     new_budget: Annotated[int, Field(description="새로운 최대 예산. 변경하지 않으려면 0")] = 0,
@@ -678,7 +683,7 @@ def modify_notification(
     }
 )
 def get_more_listings(
-    user_id: Annotated[str, Field(description="유저 고유 식별자")] = "임시유저",
+    user_id: Annotated[str, Field(description="유저 고유 식별자(전화번호 또는 카톡/텔레그램 ID). 모를 경우 '고객'")] = "고객",
     alert_id: Annotated[int, Field(description="더 볼 매물의 알림 번호. 모르면 ListMyNotifications 호출 요망")] = 0
 ) -> str:
     from notification_db import is_notice_sent, mark_notice_sent
@@ -721,6 +726,11 @@ def get_more_listings(
         gen = public_fetcher.fetch_general_sales_notices(region)
         if gen: notices.extend(gen)
         
+    # 실거래가 스캔
+    if "실거래" in interest_type:
+        rtms = public_fetcher.fetch_real_transaction_prices(region, interest_type, budget)
+        if rtms: notices.extend(rtms)
+        
     # 기존에 보여줬던 매물(DB에 저장된 발송 이력) 필터링
     from notification_db import mark_notice_sent
     
@@ -740,7 +750,7 @@ def get_more_listings(
         
     display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3
     
-    offset = USER_UI_CURSOR.get(user_id, 0)
+    offset = USER_UI_CURSOR.get(str(alert_id), 0)
     next_items = notices[offset : offset + display_limit]
     
     # 리스트 끝에 도달해서 부족한 경우 처음부터 롤링(Looping)
@@ -748,13 +758,13 @@ def get_more_listings(
     if len(next_items) < display_limit and len(notices) >= display_limit:
         deficit = display_limit - len(next_items)
         next_items.extend(notices[:deficit])
-        USER_UI_CURSOR[user_id] = deficit
+        USER_UI_CURSOR[str(alert_id)] = deficit
         is_looped = True
     elif len(next_items) < display_limit:
-        USER_UI_CURSOR[user_id] = 0
+        USER_UI_CURSOR[str(alert_id)] = 0
         is_looped = True
     else:
-        USER_UI_CURSOR[user_id] = offset + display_limit
+        USER_UI_CURSOR[str(alert_id)] = offset + display_limit
 
     if is_looped or offset == 0:
         msg = f"네! 기존 매물들을 다시 **처음부터 롤링하여 {len(next_items)}개**를 보여드립니다.\n\n"
