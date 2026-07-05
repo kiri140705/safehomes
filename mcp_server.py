@@ -507,35 +507,40 @@ def register_notification(
     if any(k in interest_type for k in ["공공임대", "LH"]):
         lh = public_fetcher.fetch_lh_lease_notices(interest_type, region)
         if lh: notices.extend(lh)
-    if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울"]):
-        sh = public_fetcher.fetch_sh_vacancy_and_plans(region)
+    if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울", "전세임대"]):
+        sh = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
         if sh: notices.extend(sh)
     if "분양" in interest_type or "청약" in interest_type:
         gen = public_fetcher.fetch_general_sales_notices(region)
         if gen: notices.extend(gen)
         
     from notification_db import is_notice_sent, mark_notice_sent
-    fresh_notices = []
+    
+    # 모든 크롤링된 매물을 DB에 저장하여 스케줄러가 중복 발송하지 않게 차단
     for n in notices:
-        if not is_notice_sent(user_id, n["id"]):
-            fresh_notices.append(n)
+        mark_notice_sent(user_id, n["id"])
+        
+    global USER_UI_CURSOR
+    if 'USER_UI_CURSOR' not in globals():
+        USER_UI_CURSOR = {}
             
-    if fresh_notices:
+    if notices:
         # 공공임대는 귀하므로 최대 10개까지, 민간 매물은 카톡 UI 방지를 위해 3개까지만 노출
         display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3
-        next_items = fresh_notices[:display_limit]
+        
+        USER_UI_CURSOR[user_id] = min(display_limit, len(notices))
+        next_items = notices[:display_limit]
         
         msg += f"🔥 **현재 기준 가장 핫한 실시간 매물/공고 Top {len(next_items)}개를 즉시 찾아왔습니다!**\n\n"
         for idx, n in enumerate(next_items, 1):
-            mark_notice_sent(user_id, n["id"])
             msg += f"[{idx}] {n['title']}\n👉 바로가기 주소: {n.get('url', n.get('link', '링크 없음'))}\n\n"
         
-        if len(fresh_notices) > display_limit:
+        if len(notices) > display_limit:
             msg += "💡 (아직 보여드리지 않은 매물이 더 있습니다. 다른 매물을 원하시면 '다른 매물 보여줘'라고 입력하세요!)\n\n"
         else:
-            msg += "💡 (현재 남은 매물을 모두 보여드렸습니다! 새로운 매물이 올라오면 알림을 드릴게요.)\n\n"
+            msg += "💡 (검색된 매물을 모두 보여드렸습니다! '다른 매물 보여줘'를 입력하시면 다시 처음부터 롤링하여 보여드립니다.)\n\n"
             
-        # 카카오톡 링크 마크다운 처리 지시문 (LLM에게 주는 프롬프트지만 사용자 노출 최소화)
+        # 카카오톡 링크 마크다운 처리 지시문
         msg += "※ 링크(URL)는 클릭 가능하도록 원본 주소 그대로 출력되었습니다."
     else:
         msg += "🔎 현재 위 조건에 새로 올라온 매물/공고가 없습니다. 새로운 정보가 뜨는 즉시 카톡으로 알림을 쏴드리겠습니다!"
@@ -707,8 +712,8 @@ def get_more_listings(
         if lh: notices.extend(lh)
         
     # SH 및 공실 스캔
-    if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울"]):
-        sh = public_fetcher.fetch_sh_vacancy_and_plans(region)
+    if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울", "전세임대"]):
+        sh = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
         if sh: notices.extend(sh)
         
     # 일반분양 스캔
@@ -717,32 +722,52 @@ def get_more_listings(
         if gen: notices.extend(gen)
         
     # 기존에 보여줬던 매물(DB에 저장된 발송 이력) 필터링
-    fresh_notices = []
-    for n in notices:
-        if not is_notice_sent(user_id, n["id"]):
-            fresh_notices.append(n)
-            
-    if not fresh_notices:
-        return json.dumps({
-            "status": "SUCCESS",
-            "message": f"현재 '{region}' 지역에 남아있는 추가 매물이 없습니다. 새로운 매물이 네이버 부동산 등에 올라오는 즉시 스케줄러가 알림으로 쏴드릴 테니 안심하고 기다려주세요!"
-        }, ensure_ascii=False)
-        
-    # 공공임대는 귀하므로 최대 10개까지, 민간 매물은 카톡 UI 방지를 위해 3개까지만 노출
-    display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3
-    next_items = fresh_notices[:display_limit]
+    from notification_db import mark_notice_sent
     
-    for n in next_items:
+    # 매번 검색할 때마다 DB에 전부 마킹하여 스케줄러 중복 알림 차단
+    for n in notices:
         mark_notice_sent(user_id, n["id"])
         
-    msg = f"네! 이전에 보지 못하셨던 **다음 순위 매물 {len(next_items)}개**를 추가로 보여드립니다.\n\n"
+    global USER_UI_CURSOR
+    if 'USER_UI_CURSOR' not in globals():
+        USER_UI_CURSOR = {}
+        
+    if not notices:
+        return json.dumps({
+            "status": "SUCCESS",
+            "message": f"현재 '{region}' 지역에 매물/공고가 전혀 없습니다. 새로운 매물이 올라오는 즉시 알림으로 쏴드릴 테니 기다려주세요!"
+        }, ensure_ascii=False)
+        
+    display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3
+    
+    offset = USER_UI_CURSOR.get(user_id, 0)
+    next_items = notices[offset : offset + display_limit]
+    
+    # 리스트 끝에 도달해서 부족한 경우 처음부터 롤링(Looping)
+    is_looped = False
+    if len(next_items) < display_limit and len(notices) >= display_limit:
+        deficit = display_limit - len(next_items)
+        next_items.extend(notices[:deficit])
+        USER_UI_CURSOR[user_id] = deficit
+        is_looped = True
+    elif len(next_items) < display_limit:
+        USER_UI_CURSOR[user_id] = 0
+        is_looped = True
+    else:
+        USER_UI_CURSOR[user_id] = offset + display_limit
+
+    if is_looped or offset == 0:
+        msg = f"네! 기존 매물들을 다시 **처음부터 롤링하여 {len(next_items)}개**를 보여드립니다.\n\n"
+    else:
+        msg = f"네! 이전에 보지 못하셨던 **다음 순위 매물 {len(next_items)}개**를 이어서 보여드립니다.\n\n"
+        
     for idx, n in enumerate(next_items, 1):
         msg += f"[{idx}] {n['title']}\n👉 바로가기 주소: {n.get('url', n.get('link', '링크 없음'))}\n\n"
         
-    if len(fresh_notices) > display_limit:
-        msg += "💡 (아직 보여드리지 않은 매물이 더 있습니다. 다른 매물을 원하시면 '다른 매물 보여줘'라고 입력하세요!)\n\n"
+    if is_looped or len(notices) <= display_limit:
+        msg += "💡 (모든 매물을 확인하셨습니다. 계속해서 롤링 검색이 가능하며, 신규 매물은 카톡 알림으로 별도 전송됩니다.)\n\n"
     else:
-        msg += "💡 (현재 남은 매물을 모두 보여드렸습니다! 새로운 매물이 올라오면 알림을 드릴게요.)\n\n"
+        msg += "💡 (아직 보여드리지 않은 매물이 더 있습니다. 다른 매물을 원하시면 '다른 매물 보여줘'라고 입력하세요!)\n\n"
         
     msg += "※ 링크(URL)는 클릭 가능하도록 원본 주소 그대로 출력되었습니다."
     

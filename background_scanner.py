@@ -39,8 +39,8 @@ async def notification_worker():
                     gen_data = public_fetcher.fetch_general_sales_notices(region)
                     if gen_data: notices.extend(gen_data)
                         
-                if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울"]):
-                    sh_data = public_fetcher.fetch_sh_vacancy_and_plans(region)
+                if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울", "전세임대"]):
+                    sh_data = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
                     if sh_data: notices.extend(sh_data)
                         
                 # 3. 새로운 공고인지 검사
