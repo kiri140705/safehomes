@@ -16,7 +16,7 @@ class PublicDataFetcher:
     def _fetch_from_api(self, url: str, params: dict):
         """실제 API 서버와 통신을 시도합니다. (실패 시 None 반환)"""
         try:
-            response = requests.get(url, params=params, timeout=3)
+            response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             return response.text
         except Exception as e:
@@ -758,7 +758,7 @@ class PublicDataFetcher:
             params["UPP_AIS_TP_CD"] = "06" # 기본 임대주택
             
         try:
-            params["PG_SZ"] = 30 # 지역 필터링을 위해 더 많이 가져옴
+            params["PG_SZ"] = 200 # 지역 필터링을 거치면 많이 잘려나가므로 최대한 많이(200개) 가져옴
             res_text = self._fetch_from_api(url, params)
             if not res_text:
                 return []
@@ -776,6 +776,10 @@ class PublicDataFetcher:
                 if r in address and r not in target_regions:
                     target_regions.append(r)
             
+            # 파주, 성남 등 특정 시/군/구가 입력되었을 경우를 위한 폴백
+            if not target_regions and address and address != "전국":
+                target_regions.append(address)
+            
             for item in data:
                 if "dsList" in item:
                     for notice in item["dsList"]:
@@ -792,8 +796,8 @@ class PublicDataFetcher:
                             if not match:
                                 continue
                         
-                        # 유저가 '공실'을 명시적으로 찾을 경우, 단순 정기공고가 아닌 '추가모집, 잔여세대, 자격완화, 선계약, 예비입주자' 등 찐 공실(빈집) 데이터만 필터링
-                        if "공실" in query or "빈집" in query or "줍줍" in query:
+                        # 유저가 '공실'을 명시적으로 찾되 '공고'라는 단어가 없을 경우에만 찐 공실(빈집) 데이터로 필터링
+                        if ("공실" in query or "빈집" in query or "줍줍" in query) and "공고" not in query:
                             vacancy_keywords = ["추가", "잔여", "완화", "예비", "선계약", "즉시", "입주자 추가"]
                             if not any(vk in title for vk in vacancy_keywords):
                                 continue
@@ -856,53 +860,37 @@ class PublicDataFetcher:
                                 "date": "실시간 크롤링"
                             })
                             
-                # 하이브리드 엔진 Phase 1: ScraperAPI + 네이버 부동산 실시간 크롤링 시도
-                # (네이버의 429 WAF 차단을 우회하기 위해 대표님이 발급받은 프록시 키 로테이션 사용)
+                # 1단계: 유저가 핀셋 URL(개별 매물 링크)을 원하므로, 네이버 모바일 통합 검색을 통해 실제 매물 리스트를 파싱해옵니다.
+                transaction_type = "전/월세"
+                b_val = "A1:B1:B2"
+                if "전세" in interest_type: 
+                    transaction_type = "전세"
+                    b_val = "B1"
+                elif "월세" in interest_type: 
+                    transaction_type = "월세"
+                    b_val = "B2"
+                elif "매매" in interest_type: 
+                    transaction_type = "매매"
+                    b_val = "A1"
+                    
+                a_val = "APT:OPST:VL:OR:ABYG:OBYG:GM:TJ:GSM:SGC:NW:SG:CMPT"
+                if "아파트" in interest_type: a_val = "APT:ABYG:JGC"
+                elif "오피스텔" in interest_type: a_val = "OPST:OBYG"
+                elif "빌라" in interest_type or "다세대" in interest_type: a_val = "VL"
+                elif "원룸" in interest_type: a_val = "OR"
+                elif "상가" in interest_type: a_val = "SG:SGC"
+                
+                budget_str = f"{transaction_type} {budget}만" if budget > 0 else f"급{transaction_type}"
+                
+                # 네이버 스크래핑을 위한 API 키
                 scraper_keys = [
                     "673947bdcd6a4633f5d592cd1b45c457",
                     "817a07a7bc8bacd03fd2e972436f1fe3",
                     "d4c92f78b1d9449ca0a1000f560d7a45",
                     "70a0091e2e366c029f6f85cf3592725b"
                 ]
-                try:
-                    import random
-                    api_key = random.choice(scraper_keys)
-                    target_url = f"https://new.land.naver.com/api/articles/complex/8372?realEstateType=APT&tradeType=B1"
-                    print(f"[*] [하이브리드 크롤러] ScraperAPI (Key: {api_key[:6]}...) 네이버 우회 접속 시도 중...")
-                    
-                    # Hackathon 1초 타임아웃으로 빠른 Fallback 유도 (실제 타겟이 500 에러를 반환하므로)
-                    # res = requests.get("https://api.scraperapi.com/", params={"api_key": api_key, "url": target_url}, timeout=1)
-                    # if res.status_code == 200:
-                    #     # 실제 데이터 파싱 (생략)
-                    #     pass
-                    # else:
-                    #     raise Exception(f"ScraperAPI HTTP Error {res.status_code}")
-                    raise Exception("ScraperAPI 네이버 접속 차단됨 (500 Error)")
-                except Exception as e:
-                    print(f"[!] [하이브리드 크롤러] 네이버 접근 실패 ({e}), 직방/다음 폴백(Fallback) 엔진 가동!")
                 
-                # 크롤링 결과가 부족할 경우, 실시간 크롤링 시연을 위한 동적 데이터 보강
                 if len(notices) < 3:
-                    transaction_type = "전/월세"
-                    b_val = "A1:B1:B2"
-                    if "전세" in interest_type: 
-                        transaction_type = "전세"
-                        b_val = "B1"
-                    elif "월세" in interest_type: 
-                        transaction_type = "월세"
-                        b_val = "B2"
-                    elif "매매" in interest_type: 
-                        transaction_type = "매매"
-                        b_val = "A1"
-                        
-                    a_val = "APT:OPST:VL:OR:ABYG:OBYG:GM:TJ:GSM:SGC:NW:SG:CMPT"
-                    if "아파트" in interest_type: a_val = "APT:ABYG:JGC"
-                    elif "오피스텔" in interest_type: a_val = "OPST:OBYG"
-                    elif "빌라" in interest_type or "다세대" in interest_type: a_val = "VL"
-                    elif "원룸" in interest_type: a_val = "OR"
-                    elif "상가" in interest_type: a_val = "SG:SGC"
-                    
-                    budget_str = f"{transaction_type} {budget}만" if budget > 0 else f"급{transaction_type}"
                     
                     # 1단계: 유저가 핀셋 URL(개별 매물 링크)을 원하므로, 네이버 모바일 통합 검색을 통해 실제 매물 리스트를 파싱해옵니다.
                     # 검색어에 예산 조건을 결합하여 보다 정확한 실거래 매물을 검색합니다.
@@ -928,64 +916,264 @@ class PublicDataFetcher:
                     base_pyeong = int(pyeong_match.group(1)) if pyeong_match else 32
                     
                     year_match = re.search(r'(\d{4})년식', interest_type)
-                    base_year = int(year_match.group(1)) if year_match else 2020
+                    base_year = int(year_match.group(1)) if year_match else 0
                     
                     try:
+
+                        def get_article_details(complex_name, article_id=None, original_price=""):
+                            result = {"year": 0, "name": complex_name, "price": original_price}
+                            
+                            if any(k in complex_name for k in ["빌라", "주택", "단독", "다가구", "원룸", "다세대", "근생", "상가"]):
+                                if article_id:
+                                    try:
+                                        import random
+                                        import requests
+                                        import re
+                                        from bs4 import BeautifulSoup
+                                        
+                                        # 모바일 네이버 부동산 직접 파싱 Fallback
+                                        headers = {"User-Agent": "Mozilla/5.0"}
+                                        r = requests.get(f"https://m.land.naver.com/article/info/{article_id}", headers=headers, timeout=5)
+                                        soup = BeautifulSoup(r.text, 'html.parser')
+                                        
+                                        title_elem = soup.find('strong', class_='detail_info_title')
+                                        if title_elem: result["name"] = title_elem.get_text(strip=True)
+                                        
+                                        price_elem = soup.find('em', class_='detail_info_price')
+                                        if price_elem: result["price"] = "매매 " + price_elem.get_text(strip=True)
+                                        
+                                        for th in soup.find_all('th'):
+                                            if '사용승인일' in th.get_text():
+                                                td = th.find_next_sibling('td')
+                                                if td:
+                                                    text = td.get_text(strip=True)
+                                                    m = re.search(r'(\d{4})[년\.]', text)
+                                                    if m: result["year"] = int(m.group(1))
+                                    except: pass
+                            else:
+                                try:
+                                    import urllib.parse, requests, re
+                                    from bs4 import BeautifulSoup
+                                    # 아파트 등은 이름으로 연식 찾기
+                                    q = urllib.parse.quote(f"서울 {complex_name}")
+                                    res = requests.get(f"https://m.search.naver.com/search.naver?query={q}", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+                                    soup = BeautifulSoup(res.text, 'html.parser')
+                                    for t in soup.stripped_strings:
+                                        m2 = re.search(r'준공(?:년도|일)?\s*[:]?\s*(\d{4})[년\.]', t)
+                                        if m2: result["year"] = int(m2.group(1))
+                                except: pass
+                            return result
+
                         import concurrent.futures
                         
-                        def get_build_year(complex_name):
+                        # 매물 유형(키워드) 추출
+                        base_keyword = "아파트"
+                        if "빌라" in interest_type or "다세대" in interest_type or "연립" in interest_type:
+                            base_keyword = "빌라"
+                        elif "오피스텔" in interest_type:
+                            base_keyword = "오피스텔"
+                        elif "상가" in interest_type:
+                            base_keyword = "상가"
+                        elif "주택" in interest_type or "단독" in interest_type or "다가구" in interest_type:
+                            base_keyword = "주택"
+                            
+                        # 최저 예산 파싱 (예: 4억 ~ 7억)
+                        min_budget = 0
+                        range_match = re.search(r'(\d+)억\s*[~-]', interest_type)
+                        if range_match:
+                            min_budget = int(range_match.group(1)) * 10000
+
+                        def get_article_details(complex_name, article_id=None, original_price=""):
+                            # 기본적으로 주어진 정보를 반환하되, API 호출 성공 시 덮어씀
+                            result = {"year": 0, "name": complex_name, "price": original_price}
+                            
+                            if any(k in complex_name for k in ["빌라", "주택", "단독", "다가구", "원룸", "다세대", "근생", "상가"]):
+                                if article_id:
+                                    try:
+                                        import random
+                                        scraper_keys = [
+                                            "673947bdcd6a4633f5d592cd1b45c457",
+                                            "817a07a7bc8bacd03fd2e972436f1fe3",
+                                            "d4c92f78b1d9449ca0a1000f560d7a45",
+                                            "70a0091e2e366c029f6f85cf3592725b"
+                                        ]
+                                        api_key = random.choice(scraper_keys)
+                                        target_url = f"https://new.land.naver.com/api/articles/{article_id}"
+                                        
+                                        success = False
+                                        # ScraperAPI를 통해 네이버 방화벽 우회 (Proxy 연동 시간이 필요하므로 timeout 15초)
+                                        r = requests.get("http://api.scraperapi.com/", params={"api_key": api_key, "url": target_url}, timeout=15)
+                                        
+                                        if r.status_code == 200:
+                                            data = r.json()
+                                            detail = data.get("articleDetail", {})
+                                            facility = data.get("articleFacility", {})
+                                            
+                                            # 정확한 연식
+                                            date_str = detail.get("useAprvYmd") or facility.get("useAprvYmd") or ""
+                                            if len(str(date_str)) >= 4:
+                                                result["year"] = int(str(date_str)[:4])
+                                                
+                                            # 정확한 건물명 (도봉동빌라 -> 상봉동 단독세대3룸)
+                                            exact_name = detail.get("articleNm") or detail.get("bildNm")
+                                            if exact_name:
+                                                result["name"] = exact_name
+                                                
+                                            # 정확한 가격
+                                            exact_price = detail.get("dealPrc") or detail.get("spcPrice")
+                                            if exact_price:
+                                                result["price"] = f"매매 {exact_price}" if "매매" in original_price else exact_price
+                                                
+                                            success = True
+                                            
+                                        if not success:
+                                            # ScraperAPI 실패/차단 시 최후의 수단: 모바일 HTML 파싱으로 정확한 이름과 가격이라도 긁어옴
+                                            headers = {"User-Agent": "Mozilla/5.0"}
+                                            r_html = requests.get(f"https://m.land.naver.com/article/info/{article_id}", headers=headers, timeout=3)
+                                            if r_html.status_code == 200:
+                                                # Title 추출 (예: 상봉동 단독세대3룸)
+                                                title_match = re.search(r'<title>(.*?)</title>', r_html.text)
+                                                if title_match and "부동산" not in title_match.group(1):
+                                                    clean_title = title_match.group(1).split(" : ")[0].strip()
+                                                    if clean_title: result["name"] = clean_title
+                                                    
+                                                # HTML 본문에서 5억 5,000 등 가격 파싱
+                                                price_match = re.search(r'매매\s*(\d+억\s*\d*만?원?)', r_html.text)
+                                                if price_match: result["price"] = "매매 " + price_match.group(1)
+                                    except: pass
+                                return result
+                                
                             try:
                                 q = urllib.parse.quote(f"{complex_name} 사용승인일")
                                 r = requests.get(f"https://m.search.naver.com/search.naver?query={q}", headers={"User-Agent": "Mozilla/5.0"}, timeout=2)
                                 t = BeautifulSoup(r.text, 'html.parser').get_text()
                                 m = re.search(r'사용승인(?:일)?\s*[:]?\s*(\d{4})[년\.]', t)
-                                if m: return int(m.group(1))
-                                m2 = re.search(r'준공(?:년도|일)?\s*[:]?\s*(\d{4})[년\.]', t)
-                                if m2: return int(m2.group(1))
+                                if m: result["year"] = int(m.group(1))
+                                else:
+                                    m2 = re.search(r'준공(?:년도|일)?\s*[:]?\s*(\d{4})[년\.]', t)
+                                    if m2: result["year"] = int(m2.group(1))
                             except: pass
-                            return 0
+                            return result
 
-                        # 페이징 처리를 위해 네이버 검색 쿼리를 다양화하여 매물 풀(Pool) 확대
-                        queries = [
-                            f"{region} 아파트 {transaction_type}",
-                            f"{region} {base_pyeong}평 아파트 {transaction_type}",
-                            f"{region} 신축 아파트 {transaction_type}",
-                            f"{region} 역세권 아파트 {transaction_type}",
-                            f"{region} 대단지 아파트 {transaction_type}",
-                            f"{region} 아파트 {transaction_type} {budget_display}",
-                            f"{region} 1층 아파트 {transaction_type}",
-                            f"{region} 저층 아파트 {transaction_type}",
-                            f"{region} 고층 아파트 {transaction_type}",
-                            f"{region} 판상형 아파트 {transaction_type}",
-                            f"{region} 남향 아파트 {transaction_type}",
-                            f"{region} 급매 아파트 {transaction_type}",
-                            f"{region} 추천 아파트 {transaction_type}",
-                            f"{region} 깨끗한 아파트 {transaction_type}"
-                        ]
+                        # 페이징 처리를 위해 네이버 검색 쿼리를 대폭 다양화하여 매물 풀(Pool) 극대화
+                        raw_regions = region.replace('/', ' ').replace(',', ' ').split()
+                        clean_region = raw_regions[0] if raw_regions else "서울"
+                        
+                        queries = []
+                        
+                        # 1. 사용자의 구체적인 단지명/검색어가 그대로 반영되도록 최우선 쿼리 추가
+                        user_specific_keyword = interest_type.replace("알려줘", "").replace("찾아줘", "").replace("매물", "").replace("전세", "").replace("월세", "").replace("매매", "").replace("아파트", "").replace("빌라", "").replace("오피스텔", "").strip()
+                        if user_specific_keyword:
+                            # region과 겹치는 단어 방지를 위해 단순히 합침
+                            queries.append(f"{region} {user_specific_keyword} {transaction_type}".strip())
+                            
+                        for r_name in raw_regions:
+                            queries.extend([
+                                f"{r_name} {base_keyword} {transaction_type}",
+                                f"{r_name} {base_pyeong}평 {base_keyword} {transaction_type}",
+                                f"{r_name} 신축 {base_keyword} {transaction_type}",
+                                f"{r_name} 역세권 {base_keyword} {transaction_type}",
+                                f"{r_name} 대단지 {base_keyword} {transaction_type}" if base_keyword == "아파트" else f"{r_name} 깨끗한 {base_keyword} {transaction_type}",
+                                f"{r_name} {base_keyword} {transaction_type} {budget_display}",
+                                f"{r_name} 1층 {base_keyword} {transaction_type}",
+                                f"{r_name} 저층 {base_keyword} {transaction_type}",
+                                f"{r_name} 고층 {base_keyword} {transaction_type}",
+                                f"{r_name} 대형 {base_keyword} {transaction_type}",
+                                f"{r_name} 소형 {base_keyword} {transaction_type}",
+                                f"{r_name} 급매 {base_keyword} {transaction_type}",
+                                f"{r_name} 추천 {base_keyword} {transaction_type}"
+                            ])
                         
                         # 유저 피드백 반영: 특정 지역만 검색되는 문제 해결을 위해 하위 지역(동/읍/면/역) 풀스캔
                         sub_regions = []
-                        if "파주" in region:
+                        if "파주" in clean_region:
                             sub_regions = ["운정", "야당", "교하", "금촌", "문산", "동패", "목동", "다율", "금릉", "와동", "금촌역", "운정역", "야당역", "탄현", "광탄"]
-                        elif "서울" in region:
+                        elif "서울" in clean_region and len(raw_regions) == 1:
                             sub_regions = ["강남", "서초", "송파", "마포", "용산", "성동", "광진", "동작", "강동", "영등포", "양천", "노원", "강서", "은평", "성북"]
-                        elif "강남" in region or "서초" in region or "송파" in region:
+                        elif any(x in raw_regions for x in ["강남", "서초", "송파"]):
                             sub_regions = ["역삼", "대치", "도곡", "개포", "삼성", "논현", "청담", "반포", "잠원", "방배", "잠실", "가락", "문정"]
+                        elif "홍대" in raw_regions:
+                            sub_regions = ["서교동", "동교동", "연남동", "망원동", "상수동"]
                             
                         for sub in sub_regions:
-                            queries.append(f"{region} {sub} 아파트 {transaction_type}")
-                            queries.append(f"{sub} {base_pyeong}평 아파트 {transaction_type}")
-                            queries.append(f"{sub} 급매 아파트 {transaction_type}")
+                            queries.append(f"{sub} {base_keyword} {transaction_type}")
+                            queries.append(f"{sub} {base_pyeong}평 {base_keyword} {transaction_type}")
+                            queries.append(f"{sub} 급매 {base_keyword} {transaction_type}")
+                            queries.append(f"{sub} 추천 {base_keyword} {transaction_type}")
+                        
+                        scraper_keys = [
+                            "673947bdcd6a4633f5d592cd1b45c457",
+                            "817a07a7bc8bacd03fd2e972436f1fe3",
+                            "d4c92f78b1d9449ca0a1000f560d7a45",
+                            "70a0091e2e366c029f6f85cf3592725b"
+                        ]
                         
                         def fetch_query(q_str):
                             q = urllib.parse.quote(q_str)
+                            target_url = f"https://m.search.naver.com/search.naver?query={q}"
                             try:
-                                res = requests.get(f"https://m.search.naver.com/search.naver?query={q}", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+                                # Try direct request first for speed
+                                res = requests.get(target_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
                                 soup = BeautifulSoup(res.text, 'html.parser')
-                                return soup.find_all('a')
+                                a_tags = soup.find_all('a', href=True)
+                                if a_tags: return a_tags
+                            except: pass
+                            
+                            try:
+                                # Fallback to ScraperAPI if direct request fails or is blocked
+                                import random
+                                api_key = random.choice(scraper_keys)
+                                scraper_url = f"http://api.scraperapi.com/?api_key={api_key}&url={urllib.parse.quote(target_url)}"
+                                res = requests.get(scraper_url, timeout=10)
+                                soup = BeautifulSoup(res.text, 'html.parser')
+                                return soup.find_all('a', href=True)
                             except:
                                 return []
-                                
+
+                        def get_article_details(complex_name, article_id=None, original_price=""):
+                            result = {"year": 0, "name": complex_name, "price": original_price}
+                            
+                            if any(k in complex_name for k in ["빌라", "주택", "단독", "다가구", "원룸", "다세대", "근생", "상가"]):
+                                if article_id:
+                                    try:
+                                        import random
+                                        import requests
+                                        import re
+                                        from bs4 import BeautifulSoup
+                                        
+                                        # 모바일 네이버 부동산 직접 파싱 Fallback
+                                        headers = {"User-Agent": "Mozilla/5.0"}
+                                        r = requests.get(f"https://m.land.naver.com/article/info/{article_id}", headers=headers, timeout=5)
+                                        soup = BeautifulSoup(r.text, 'html.parser')
+                                        
+                                        title_elem = soup.find('strong', class_='detail_info_title')
+                                        if title_elem: result["name"] = title_elem.get_text(strip=True)
+                                        
+                                        price_elem = soup.find('em', class_='detail_info_price')
+                                        if price_elem: result["price"] = "매매 " + price_elem.get_text(strip=True)
+                                        
+                                        for th in soup.find_all('th'):
+                                            if '사용승인일' in th.get_text():
+                                                td = th.find_next_sibling('td')
+                                                if td:
+                                                    text = td.get_text(strip=True)
+                                                    m = re.search(r'(\d{4})[년\.]', text)
+                                                    if m: result["year"] = int(m.group(1))
+                                    except: pass
+                            else:
+                                try:
+                                    import urllib.parse, requests, re
+                                    from bs4 import BeautifulSoup
+                                    # 아파트 등은 이름으로 연식 찾기
+                                    q = urllib.parse.quote(f"서울 {complex_name}")
+                                    res = requests.get(f"https://m.search.naver.com/search.naver?query={q}", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+                                    soup = BeautifulSoup(res.text, 'html.parser')
+                                    for t in soup.stripped_strings:
+                                        m2 = re.search(r'준공(?:년도|일)?\s*[:]?\s*(\d{4})[년\.]', t)
+                                        if m2: result["year"] = int(m2.group(1))
+                                except: pass
+                            return result
+
                         import concurrent.futures
                         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
                             results = list(executor.map(fetch_query, queries))
@@ -995,28 +1183,43 @@ class PublicDataFetcher:
                         
                         for a in all_a_tags:
                             href = a.get('href', '')
-                            if 'article/bridge/' in href:
-                                match = re.search(r'article/bridge/(\d+)', href)
-                                if match:
+                            match = re.search(r'(?:article/bridge/|fin\.land\.naver\.com/articles/|article/info/)(\d+)', href)
+                            if match:
                                     article_id = match.group(1)
                                     name_tag = a.find('strong', class_='name')
-                                    name = name_tag.get_text(strip=True) if name_tag else "부동산 매물"
+                                    if not name_tag: name_tag = a.find('div', class_='title')
+                                    if not name_tag: name_tag = a.find('strong', class_='tit')
+                                    name = name_tag.get_text(strip=True) if name_tag else a.text.strip()
                                     
                                     offer_tag = a.find('div', class_='offer')
                                     price_str = offer_tag.get_text(strip=True) if offer_tag else ""
                                     
                                     desc_tag = a.find('div', class_='desc')
+                                    if not desc_tag: desc_tag = a.find('div', class_='info')
                                     desc_text = desc_tag.get_text(strip=True) if desc_tag else ""
                                     
+                                    title_text = name
+                                    full_text = desc_text + " " + title_text + " " + a.text.strip()
+                                    
+                                    if not price_str:
+                                        price_match = re.search(r'(매매|전세|월세)\s*([0-9,억만\s/]+)', full_text)
+                                        if price_match: price_str = price_match.group(0)
+                                        
                                     # 엄격한 거래유형 필터링 (전세/월세/매매)
-                                    if transaction_type not in price_str and transaction_type != "전/월세":
+                                    if transaction_type not in price_str and transaction_type != "전/월세" and transaction_type not in full_text:
                                         continue
                                         
                                     # 평수 추출
                                     pyeong = base_pyeong
-                                    size_match = re.search(r'(\d+)/\d+㎡', desc_text)
+                                    size_match = re.search(r'(\d+)/\d+㎡', full_text)
                                     if size_match:
                                         pyeong = int(int(size_match.group(1)) / 3.3058)
+                                    else:
+                                        size_m2 = re.search(r'(\d+)㎡', full_text)
+                                        if size_m2: pyeong = int(int(size_m2.group(1)) / 3.3058)
+                                        else:
+                                            py_match = re.search(r'(\d+)평', full_text)
+                                            if py_match: pyeong = int(py_match.group(1))
                                         
                                     # 평수 조건(이상/이하) 지능형 필터링 적용
                                     if base_pyeong > 0:
@@ -1051,11 +1254,28 @@ class PublicDataFetcher:
                                             man_match = re.search(r'^(\d+)만', clean_price)
                                             if man_match:
                                                 man = int(man_match.group(1))
-                                        numeric_price = eok + man
+                                                
+                                        if "월세" in transaction_type:
+                                            ws_match = re.search(r'/(\d+)', clean_price)
+                                            if ws_match:
+                                                numeric_price = int(ws_match.group(1))
+                                            else:
+                                                numeric_price = eok + man
+                                        else:
+                                            numeric_price = eok + man
                                         
                                     if budget > 0 and numeric_price > 0 and numeric_price > budget:
                                         continue # 예산 초과 매물 제외
+                                        
+                                    if min_budget > 0 and numeric_price > 0 and numeric_price < min_budget:
+                                        continue # 최저 예산 미달 매물 제외
                                     
+                                    # 핀셋 매물 필터 (특정 아파트/빌라 이름을 명시한 경우 다른 매물은 철저히 배제)
+                                    if user_specific_keyword:
+                                        kw = user_specific_keyword.replace(" ", "")
+                                        if kw and kw not in name.replace(" ", ""):
+                                            continue
+                                            
                                     real_properties.append({
                                         "id": article_id,
                                         "name": name,
@@ -1078,22 +1298,72 @@ class PublicDataFetcher:
                             c_name = p["name"].split()[0]
                             complex_names.add(c_name)
 
-                    # 멀티스레딩 기반 빠른 단지 연식 검색
-                    year_dict = {}
+                    # 멀티스레딩 기반 빠른 단지 상세 정보 검색 (연식, 정확한 이름, 정확한 가격)
+                    detail_dict = {}
                     if unique_props:
+                        def get_article_details(complex_name, article_id=None, original_price="", region_name=""):
+                            result = {"year": 0, "name": complex_name, "price": original_price}
+                            
+                            if any(k in complex_name for k in ["빌라", "주택", "단독", "다가구", "원룸", "다세대", "근생", "상가"]):
+                                if article_id:
+                                    try:
+                                        import random
+                                        import requests
+                                        import re
+                                        from bs4 import BeautifulSoup
+                                        
+                                        # 모바일 네이버 부동산 직접 파싱 Fallback
+                                        headers = {"User-Agent": "Mozilla/5.0"}
+                                        r = requests.get(f"https://m.land.naver.com/article/info/{article_id}", headers=headers, timeout=5)
+                                        soup = BeautifulSoup(r.text, 'html.parser')
+                                        
+                                        title_elem = soup.find('strong', class_='detail_info_title')
+                                        if title_elem: result["name"] = title_elem.get_text(strip=True)
+                                        
+                                        price_elem = soup.find('em', class_='detail_info_price')
+                                        if price_elem: result["price"] = "매매 " + price_elem.get_text(strip=True)
+                                        
+                                        for th in soup.find_all('th'):
+                                            if '사용승인일' in th.get_text():
+                                                td = th.find_next_sibling('td')
+                                                if td:
+                                                    text = td.get_text(strip=True)
+                                                    m = re.search(r'(\d{4})[년\.]', text)
+                                                    if m: result["year"] = int(m.group(1))
+                                    except: pass
+                            else:
+                                try:
+                                    import urllib.parse, requests, re
+                                    from bs4 import BeautifulSoup
+                                    # 아파트 등은 이름으로 연식 찾기
+                                    q = urllib.parse.quote(f"{region_name} {complex_name} 단지정보")
+                                    res = requests.get(f"https://m.search.naver.com/search.naver?query={q}", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+                                    soup = BeautifulSoup(res.text, 'html.parser')
+                                    full_text = soup.get_text(' ')
+                                    m2 = re.search(r'(?:준공|사용승인|입주)[^\d]*(\d{4})[년\.]', full_text)
+                                    if m2: result["year"] = int(m2.group(1))
+                                except: pass
+                            return result
+
                         try:
                             import concurrent.futures
                             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                                future_to_name = {executor.submit(get_build_year, c): c for c in complex_names}
-                                for future in concurrent.futures.as_completed(future_to_name):
-                                    c = future_to_name[future]
-                                    year_dict[c] = future.result()
+                                future_to_id = {executor.submit(get_article_details, p["name"], p["id"], p["price"], region): p["id"] for p in unique_props}
+                                for future in concurrent.futures.as_completed(future_to_id):
+                                    p_id = future_to_id[future]
+                                    detail_dict[p_id] = future.result()
                         except: pass
 
                     # 최종 필터링 (연식 적용) 및 결과 생성
                     for p in unique_props:
-                        c_name = p["name"].split()[0]
-                        prop_year = year_dict.get(c_name, 0)
+                        details = detail_dict.get(p["id"], {"year": 0, "name": p["name"], "price": p["price"]})
+                        prop_year = details["year"]
+                        exact_name = details["name"]
+                        
+                        # Typo cleanup (e.g. 5억,000만원 -> 5억 / 5억,900만원 -> 5억 900만원)
+                        exact_price = details["price"]
+                        exact_price = exact_price.replace("억,000만원", "억").replace("억,000만", "억")
+                        exact_price = exact_price.replace("억,", "억 ")
                         
                         # 연식 조건 필터링
                         if base_year > 0 and prop_year > 0 and prop_year < base_year:
@@ -1104,42 +1374,198 @@ class PublicDataFetcher:
                         
                         notices.append({
                             "id": f"HYBRID_REAL_{region}_{p['id']}",
-                            "title": f"[{region}] {p['name']} - {year_display} {p['floor']}층 {p['pyeong']}평 (실거래: {p['price']})",
+                            "title": f"[{region}] {exact_name} - {year_display} {p['floor']}층 {p['pyeong']}평 (호가(검색노출가): {exact_price})",
                             "url": final_url,
                             "date": "확인된 매물"
                         })
                     
-                    # [V13] 유저 피드백 반영: 특정 지역 하드코딩 제거 및 네이버 부동산 매물/단지 통합 검색(PC/모바일 호환) URL로 일괄 변경
-                    if len(notices) < 3:
-                        import random
-                        import time
-                        import urllib.parse
-                        
-                        # 요청한 예산이 있으면 예산 근처로, 없으면 적당한 금액으로 포맷팅
-                        budget_str = f"{transaction_type}{budget//10000}억{(budget%10000)//1000}000만원" if budget >= 10000 else (f"{transaction_type}{budget}만원" if budget > 0 else f"급{transaction_type}")
-                        
-                        fallback_pools = [
-                            {"name": f"{region.split()[0]} 푸르지오", "year": base_year if base_year > 0 else 2018, "pyeong": base_pyeong, "price": budget_str},
-                            {"name": f"{region.split()[0]} 래미안", "year": (base_year if base_year > 0 else 2015) + 1, "pyeong": base_pyeong + 1, "price": budget_str},
-                            {"name": f"{region.split()[0]} 힐스테이트", "year": (base_year if base_year > 0 else 2020) + 2, "pyeong": base_pyeong - 1, "price": budget_str},
-                            {"name": f"{region.split()[0]} 센트럴파크", "year": base_year if base_year > 0 else 2012, "pyeong": base_pyeong, "price": budget_str},
-                            {"name": f"{region.split()[0]} e편한세상", "year": (base_year if base_year > 0 else 2017) - 1, "pyeong": base_pyeong + 2, "price": budget_str}
-                        ]
-                        random.shuffle(fallback_pools)
-                        for item in fallback_pools:
-                            if len(notices) >= 3: break
-                            mock_id = f"MOCK_{int(time.time())}_{random.randint(1000, 9999)}"
-                            safe_query = urllib.parse.quote(f"{item['name']}")
-                            notices.append({
-                                "id": mock_id,
-                                "title": f"[{region}] {item['name']} - {item['year']}년식 {random.randint(3, 15)}층 {item['pyeong']}평 (추정가: {item['price']})",
-                                "url": f"https://m.land.naver.com/search/result/{safe_query}",
-                                "date": "실거래 기반 예측"
-                            })
+
                             
         except Exception as e:
             print(f"[!] 네이버 크롤링 실패: {e}")
             
+
+        # 네이버 매물을 하나도 못 찾은 경우 직방 엔진으로 풀(Full) 폴백
+        if len(notices) == 0:
+            # 네이버 결과 초기화 후 직방 데이터로 대체
+            notices = []
+            try:
+                import urllib.parse
+                from bs4 import BeautifulSoup
+                import re, requests
+                import concurrent.futures
+                
+                # 다음 검색어는 너무 구체적이면 매물이 안 나오므로 키워드만 추출 (예: 서울 양천구 -> 양천구, 홍대/합정 -> 홍대)
+                raw_regions = region.replace('/', ' ').replace(',', ' ').split()
+                clean_region = raw_regions[0] if raw_regions else "서울"
+                
+                base_keywords = ""
+                if "빌라" in interest_type: base_keywords += " 빌라"
+                elif "아파트" in interest_type: base_keywords += " 아파트"
+                elif "오피스텔" in interest_type: base_keywords += " 오피스텔"
+                elif "원룸" in interest_type: base_keywords += " 원룸"
+                elif "상가" in interest_type: base_keywords += " 상가"
+                elif "사무실" in interest_type: base_keywords += " 사무실"
+                
+                if "매매" in interest_type: base_keywords += " 매매"
+                elif "전세" in interest_type: base_keywords += " 전세"
+                elif "월세" in interest_type: base_keywords += " 월세"
+                
+                # 대량의 직방 매물을 확보하기 위한 쿼리 다변화
+                d_queries = []
+                for r_name in raw_regions:
+                    bq = r_name + base_keywords
+                    d_queries.extend([
+                        bq,
+                        f"{bq} 1층",
+                        f"{bq} 신축",
+                        f"{bq} 투룸",
+                        f"{bq} 대형",
+                        f"{bq} 급매",
+                        f"{bq} {budget_display}"
+                    ])
+                    
+                sub_regions = []
+                if "파주" in clean_region:
+                    sub_regions = ["운정", "야당", "교하", "금촌", "문산", "동패", "목동", "다율", "금릉", "와동", "금촌역", "운정역", "야당역", "탄현", "광탄"]
+                elif "서울" in clean_region and len(raw_regions) == 1:
+                    sub_regions = ["강남", "서초", "송파", "마포", "용산", "성동", "광진", "동작", "강동", "영등포", "양천", "노원", "강서", "은평", "성북"]
+                elif any(x in raw_regions for x in ["강남", "서초", "송파"]):
+                    sub_regions = ["역삼", "대치", "도곡", "개포", "삼성", "논현", "청담", "반포", "잠원", "방배", "잠실", "가락", "문정"]
+                elif "홍대" in raw_regions:
+                    sub_regions = ["서교동", "동교동", "연남동", "망원동", "상수동"]
+                    
+                for sub in sub_regions:
+                    bq = sub + base_keywords
+                    d_queries.extend([
+                        bq,
+                        f"{bq} 신축",
+                        f"{bq} 대형",
+                        f"{bq} 급매"
+                    ])
+                
+                def fetch_daum_q(q_str):
+                    q_enc = urllib.parse.quote(q_str)
+                    headers = {"User-Agent": "Mozilla/5.0"}
+                    try:
+                        r_daum = requests.get(f"https://m.search.daum.net/search?w=tot&q={q_enc}", headers=headers, timeout=5)
+                        soup_daum = BeautifulSoup(r_daum.text, 'html.parser')
+                        return soup_daum.find_all('a', href=True)
+                    except: return []
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    d_results = list(executor.map(fetch_daum_q, d_queries))
+                    
+                all_daum_a = []
+                for res in d_results: all_daum_a.extend(res)
+                
+                daum_count = 0
+                seen_z_ids = set()
+                
+                for a in all_daum_a:
+                    href = a['href']
+                    if 'm.zigbang.com/home' in href or 'realty.daum.net' in href:
+                        text = a.text.strip()
+                        if "매매" in text or "전세" in text or "월세" in text:
+                            item_id_match = re.search(r'/items/(\d+)', href)
+                            z_item_id = item_id_match.group(1) if item_id_match else None
+                            
+                            if z_item_id and z_item_id in seen_z_ids: continue
+                            if z_item_id: seen_z_ids.add(z_item_id)
+                            
+                            parts = [p.strip() for p in text.split("  ") if p.strip()]
+                            name = parts[0] if len(parts) > 0 else "매물"
+                            details = parts[2] if len(parts) > 2 else ""
+                            price = parts[-1] if len(parts) > 1 else ""
+                            
+                            year = "연식 미확인"
+                            try:
+                                if z_item_id:
+                                    headers = {"User-Agent": "Mozilla/5.0"}
+                                    z_res = requests.get(f"https://apis.zigbang.com/v3/items/{z_item_id}", headers=headers, timeout=2)
+                                    if z_res.status_code == 200:
+                                        z_data = z_res.json()
+                                        approve_date = str(z_data.get("item", {}).get("approveDate", ""))
+                                        if len(approve_date) >= 4:
+                                            year = f"{approve_date[:4]}년식"
+                            except: pass
+                            
+                            if year == "연식 미확인" and "입주" in details:
+                                m_ipju = re.search(r'(\d{4})\.\d{2}입주', details)
+                                if m_ipju:
+                                    year = f"{m_ipju.group(1)}년식"
+                                    
+                            if year == "연식 미확인":
+                                year_match = re.search(r'(\d{4})년식', interest_type)
+                                if year_match: year = f"{year_match.group(1)}년식 이상"
+                                
+                            # 평수 단위 변환 및 지저분한 입주 단어 제거
+                            details = re.sub(r',\s*\d{4}\.\d{2}입주', '', details)
+                            details = re.sub(r'\d{4}\.\d{2}입주', '', details)
+                            
+                            pyeong = 0
+                            def sq_to_py(match):
+                                nonlocal pyeong
+                                nums = re.findall(r'\d+', match.group(0))
+                                if nums:
+                                    pyeong = int(float(nums[-1]) * 0.3025)
+                                    return f"{pyeong}평"
+                                return match.group(0)
+                            
+                            details = re.sub(r'[\d\.\/]+㎡', sq_to_py, details)
+                            
+                            # 평수 엄격 필터링
+                            if base_pyeong > 0 and pyeong > 0:
+                                if "이상" in interest_type:
+                                    if pyeong < base_pyeong: continue
+                                elif "이하" in interest_type:
+                                    if pyeong > base_pyeong: continue
+                                else:
+                                    min_pyeong = (base_pyeong // 10) * 10
+                                    max_pyeong = min_pyeong + 9
+                                    if not (min_pyeong <= pyeong <= max_pyeong): continue
+                                    
+                            # 예산 엄격 필터링
+                            numeric_price = 0
+                            clean_price = price.replace(',', '').replace(' ', '').replace('전세', '').replace('매매', '').replace('월세', '')
+                            eok = 0
+                            man = 0
+                            eok_match = re.search(r'(\d+)억', clean_price)
+                            if eok_match: eok = int(eok_match.group(1)) * 10000
+                            man_match = re.search(r'억(\d+)[만]?', clean_price)
+                            if man_match: man = int(man_match.group(1))
+                            else:
+                                man_match = re.search(r'^(\d+)만', clean_price)
+                                if man_match: man = int(man_match.group(1))
+                                
+                            if "월세" in price:
+                                ws_match = re.search(r'/(\d+)', clean_price)
+                                if ws_match:
+                                    # 월세의 경우 보증금 대신 월세 금액을 numeric_price로 간주 (유저가 500만원 이하라고 하면 월세임)
+                                    numeric_price = int(ws_match.group(1))
+                            else:
+                                numeric_price = eok + man
+                                
+                            if budget > 0 and numeric_price > 0 and numeric_price > budget:
+                                continue
+                                
+                            # 핀셋 매물 필터 (특정 아파트/빌라 이름을 명시한 경우 다른 매물은 철저히 배제)
+                            if user_specific_keyword:
+                                kw = user_specific_keyword.replace(" ", "")
+                                if kw and kw not in name.replace(" ", ""):
+                                    continue
+                            
+                            title = f"[{region}] {name} - ({year}) {details} (호가(검색노출가): {price})"
+                            notices.append({
+                                "id": f"DAUM_REAL_{region}_{daum_count}",
+                                "title": title,
+                                "url": href,
+                                "date": "실시간 직방/다음 폴백"
+                            })
+                            daum_count += 1
+            except Exception as daum_e:
+                print(f"[!] 직방/다음 크롤링 실패: {daum_e}")
+
         return notices
 
     def fetch_general_sales_notices(self, address: str):
@@ -1180,7 +1606,7 @@ class PublicDataFetcher:
         
         # 쿼리에서 주택 유형 정밀 파싱
         is_youth = any(k in query for k in ["청년주택", "청년안심주택"])
-        is_longterm = any(k in query for k in ["장기전세", "SHift", "SH 전세"])
+        is_longterm = any(k in query for k in ["장기전세", "SHift"])
         is_lease = "전세임대" in query
         
         # 만약 아무 특정 조건이 없으면 모두 가져오도록 설정
@@ -1231,23 +1657,23 @@ class PublicDataFetcher:
             if is_longterm or fetch_all:
                 notices.append({
                     "id": "SH_PAST_LONGTERM_1",
-                    "title": "[기존공고] 2024년 1차 서울리츠 장기전세주택 입주자 모집 (대치/역삼 등)",
-                    "url": "https://www.i-sh.co.kr/main/lay2/program/S1T294C295/www/brd/m_241/view.do?seq=266580",
-                    "date": "2024-03-15"
+                    "title": "[모집공고] 제50차 장기전세주택 입주자 모집공고",
+                    "url": "https://www.i-sh.co.kr/main/lay2/program/S1T294C295/www/brd/m_241/view.do?seq=303557",
+                    "date": "2026-04-27"
                 })
             if is_youth or fetch_all:
                 notices.append({
                     "id": "SH_PAST_YOUTH_1",
-                    "title": "[기존공고] 2024년 1차 역세권 청년주택(공공임대) 입주자 모집 (마포/송파 등)",
-                    "url": "https://www.i-sh.co.kr/main/lay2/program/S1T294C295/www/brd/m_241/view.do?seq=266123",
-                    "date": "2024-02-28"
+                    "title": "[모집공고] 2026년 1차 청년 매입임대주택 입주자 모집공고",
+                    "url": "https://www.i-sh.co.kr/main/lay2/program/S1T294C295/www/brd/m_241/view.do?seq=306214",
+                    "date": "2026-06-26"
                 })
             if is_lease or fetch_all:
                 notices.append({
                     "id": "SH_PAST_LEASE_1",
-                    "title": "[기존공고] 2024년 제1차 기존주택 전세임대 입주자 정기모집",
-                    "url": "https://www.i-sh.co.kr/main/lay2/program/S1T294C295/www/brd/m_241/view.do?seq=265988",
-                    "date": "2024-01-10"
+                    "title": "[모집공고] 2026년 전세임대형 든든주택 입주자 모집공고",
+                    "url": "https://www.i-sh.co.kr/main/lay2/program/S1T294C295/www/brd/m_241/view.do?seq=303584",
+                    "date": "2026-04-29"
                 })
                 
         return notices
@@ -1704,14 +2130,18 @@ class PublicDataFetcher:
         else: # 기본 아파트
             url = "http://apis.data.go.kr/1611000/rtmsDataSvcAptRent/getRTMSDataSvcAptRent" if is_rent else "http://apis.data.go.kr/1611000/rtmsDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
 
-        deal_ymd = months[0]
-        params = {"serviceKey": self.portal_api_key, "LAWD_CD": lawd_cd, "DEAL_YMD": deal_ymd}
-        notices = []
+        # 타입(전용면적)별로 가장 최신 거래를 저장하기 위한 딕셔너리
+        latest_by_type = {}
         
-        try:
-            res = requests.get(url, params=params, timeout=5)
-            if res.status_code == 200:
-                root = ET.fromstring(res.text)
+        for deal_ymd in months:
+            params = {"serviceKey": self.portal_api_key, "LAWD_CD": lawd_cd, "DEAL_YMD": deal_ymd}
+            
+            try:
+                res = requests.get(url, params=params, timeout=15)
+                if res.status_code == 200:
+                    root = ET.fromstring(res.text)
+                else:
+                    continue
                 for item in root.iter('item'):
                     # 단지명
                     name_tags = ['아파트', '단지', '연립다세대']
@@ -1769,7 +2199,9 @@ class PublicDataFetcher:
                         
                     # 예산 돌파/이하 로직
                     if budget > 0:
-                        if "돌파" in interest_type or "이상" in interest_type:
+                        # 상승/돌파를 의미하는 키워드들 검사
+                        upward_keywords = ["돌파", "이상", "넘으면", "상승", "오르면", "위로", "도달", "되면", "튀면"]
+                        if any(k in interest_type for k in upward_keywords):
                             if price < budget: continue
                         else:
                             if price > budget: continue
@@ -1779,39 +2211,21 @@ class PublicDataFetcher:
                     
                     day_node = item.find('일')
                     day = day_node.text.strip() if day_node is not None and day_node.text else "1"
+                    # 평수/타입 키 (예: 84.97㎡)
+                    area_str = f"{area}㎡" if 'area' in locals() and area > 0 else f"{pyeong}평"
                     
-                    notices.append({
-                        "id": f"RTMS_{lawd_cd}_{deal_ymd}{day}_{complex_name}_{price}",
-                        "title": f"📈 [실거래 속보] {region} {complex_name} {pyeong}평 {floor}층 - 실거래가 {price_str} 등록!",
-                        "url": "http://rt.molit.go.kr/",
-                        "date": f"{deal_ymd[:4]}-{deal_ymd[4:]}-{int(day):02d}"
-                    })
-        except Exception as e:
-            print(f"[!] 실거래가 API 호출 실패: {e}")
-            
-        if len(notices) == 0:
-            mock_price = budget if budget > 0 else 1700000000
-            mock_pyeong = pyeong_target if pyeong_target > 0 else 30
-            mock_name = apt_name if apt_name else f"{region.split()[0]} 아파트"
-            
-            if "월세" in interest_type:
-                deposit_mock = mock_price if budget > 0 else 100000000
-                price_str = f"월세 {deposit_mock//100000000}억{(deposit_mock%100000000)//10000}만원/120만원".replace("0만원", "")
-            elif "전세" in interest_type:
-                deposit_mock = mock_price if budget > 0 else 800000000
-                price_str = f"전세 {deposit_mock//100000000}억{(deposit_mock%100000000)//10000}만원".replace("0만원", "")
-            else:
-                price_str = f"매매 {mock_price//100000000}억{(mock_price%100000000)//10000}만원".replace("0만원", "")
-            
-            import urllib.parse
-            safe_query = urllib.parse.quote(f"{mock_name}")
-            
-            notices.append({
-                "id": f"RTMS_MOCK_{int(time.time())}",
-                "title": f"📈 [실거래 속보] {region} {mock_name} {mock_pyeong}평 중층 - 실거래가 {price_str} 등록!",
-                "url": f"https://m.land.naver.com/search/result/{safe_query}",
-                "date": f"{now.strftime('%Y-%m-%d')}"
-            })
-            
+                    if area_str not in latest_by_type:
+                        latest_by_type[area_str] = {
+                            "id": f"RTMS_{lawd_cd}_{deal_ymd}{day}_{complex_name}_{area_str}",
+                            "title": f"{complex_name} / {area_str} / {floor}층 / 20{deal_ymd[2:4]}.{deal_ymd[4:]}.{int(day):02d} / {price_str}",
+                            "url": "", # 링크 제거
+                            "date": f"{deal_ymd[:4]}-{deal_ymd[4:]}-{int(day):02d}"
+                        }
+            except Exception as e:
+                print(f"[!] 실거래가 API 호출 실패: {e}")
+                
+        # 딕셔너리 값들을 리스트로 변환 (타입별 최신 거래 1건씩)
+        notices = list(latest_by_type.values())
+                
         return notices
 

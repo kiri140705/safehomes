@@ -71,8 +71,11 @@ async def notification_worker():
                     msg += f"⚠️ **조건에 맞는 매물이 총 {total_count}건 발견되었습니다! 알림 폭탄 방지를 위해 Top 3만 요약해 드립니다.**\n"
                 
                 for idx, notice in enumerate(display_notices, 1):
-                    msg += f"\n[{idx}] {notice['title']}\n"
-                    msg += f"🔗 링크: {notice['url']}\n"
+                    url_str = notice.get('url', '')
+                    if url_str:
+                        msg += f"\n[{idx}] {notice['title']}\n🔗 링크: {url_str}\n"
+                    else:
+                        msg += f"\n- {notice['title']}\n"
                     
                 msg += f"\n발송시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 msg += f"=====================================\n"

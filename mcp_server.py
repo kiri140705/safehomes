@@ -502,12 +502,17 @@ def register_notification(
     
     # 즉시 초기 1회 스캔 수행 (유저가 바로 결과를 보고 싶어하는 경우 대응)
     notices = []
-    if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]):
+    
+    is_public_housing_only = any(k in interest_type.upper() for k in ["공공임대", "LH", "SH", "청년주택", "장기전세", "국민임대", "공실", "공고"])
+    
+    if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]) and not is_public_housing_only:
         notices.extend(public_fetcher.fetch_naver_real_estate(region, budget, interest_type))
-    if any(k in interest_type for k in ["공공임대", "LH"]):
-        lh = public_fetcher.fetch_lh_lease_notices(interest_type, region)
+        
+    if any(k in interest_type.upper() for k in ["공공임대", "LH", "공실", "공고"]):
+        lh = public_fetcher.fetch_lh_lease_notices(region, interest_type)
         if lh: notices.extend(lh)
-    if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울", "전세임대"]):
+        
+    if any(k in interest_type.upper() for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울", "전세임대", "공고"]):
         sh = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
         if sh: notices.extend(sh)
     if "분양" in interest_type or "청약" in interest_type:
@@ -538,12 +543,16 @@ def register_notification(
         
         msg += f"🔥 **현재 기준 가장 핫한 실시간 매물/공고 Top {len(next_items)}개를 즉시 찾아왔습니다!**\n\n"
         for idx, n in enumerate(next_items, 1):
-            msg += f"[{idx}] {n['title']}\n👉 바로가기 주소: {n.get('url', n.get('link', '링크 없음'))}\n\n"
+            url_str = n.get('url', n.get('link', ''))
+            if url_str:
+                msg += f"[{idx}] {n['title']}\n👉 바로가기 주소: {url_str}\n\n"
+            else:
+                msg += f"- {n['title']}\n"
         
-        if len(notices) > display_limit:
+        if len(notices) >= display_limit:
             msg += "💡 (아직 보여드리지 않은 매물이 더 있습니다. 다른 매물을 원하시면 '다른 매물 보여줘'라고 입력하세요!)\n\n"
         else:
-            msg += "💡 (검색된 매물을 모두 보여드렸습니다! '다른 매물 보여줘'를 입력하시면 다시 처음부터 롤링하여 보여드립니다.)\n\n"
+            msg += "💡 (현재 위 조건에 맞는 전체 매물을 모두 보여드렸습니다. 신규 매물이 발견되면 카톡으로 즉시 알려드릴게요!)\n\n"
             
         # 카카오톡 링크 마크다운 처리 지시문
         msg += "※ 링크(URL)는 클릭 가능하도록 원본 주소 그대로 출력되었습니다."
@@ -673,9 +682,9 @@ def modify_notification(
 
 @mcp.tool(
     name="GetMoreListings",
-    description="[주의] 유저가 '다른 매물 보여줘', '더 없어?' 처럼 **아무 조건 없이** 단순히 '다음 페이지'를 요구할 때만 쓰세요. 만약 유저가 '파주 30평 아파트 찾아줘' 처럼 새로운 지역명이나 구체적인 조건을 말하며 질문했다면 절대로 이 툴을 쓰지 말고 무조건 RegisterNotification 툴을 호출하세요!!",
+    description="[주의] 유저가 '다른 매물 보여줘', '더 없어?' 처럼 단순히 다음 페이지를 요구할 때 쓰세요. 만약 유저가 '기존 매물 다시 보여줘', '처음부터 다시 보여줘' 라고 기존 매물 재요청을 하면 reset=True 로 설정하여 호출하세요.",
     annotations={
-        "title": "SafeHomes 다음 매물 보기 (롤링)",
+        "title": "SafeHomes 다음 매물 보기",
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,
@@ -684,16 +693,14 @@ def modify_notification(
 )
 def get_more_listings(
     user_id: Annotated[str, Field(description="유저 고유 식별자(전화번호 또는 카톡/텔레그램 ID). 모를 경우 '고객'")] = "고객",
-    alert_id: Annotated[int, Field(description="더 볼 매물의 알림 번호. 모르면 ListMyNotifications 호출 요망")] = 0
+    alert_id: Annotated[int, Field(description="더 볼 매물의 알림 번호. 모르면 ListMyNotifications 호출 요망")] = 0,
+    reset: Annotated[bool, Field(description="유저가 '기존 매물 다시 보여줘', '처음부터 다시 보여줘'라고 명시적으로 요청한 경우에만 true로 설정합니다.")] = False
 ) -> str:
     from notification_db import is_notice_sent, mark_notice_sent
     if alert_id <= 0:
-        # 유저가 알림 번호를 지정하지 않았을 경우, 가장 최근에 등록/검색한 알림(가장 큰 alert_id)을 자동으로 선택합니다.
         alerts = get_user_alerts(user_id)
         if not alerts:
             return json.dumps({"status": "ERROR", "message": "현재 등록된 알림(조건)이 없습니다. 먼저 매물을 검색하거나 알림을 등록해주세요."})
-        
-        # 가장 최근 알림(alert_id가 가장 큰 것) 선택
         latest_alert = max(alerts, key=lambda x: x[0])
         alert_id = latest_alert[0]
         current_alert = latest_alert
@@ -703,38 +710,25 @@ def get_more_listings(
             return json.dumps({"status": "ERROR", "message": f"{alert_id}번 알림 조건이 존재하지 않습니다."})
             
     region, budget, interest_type = current_alert[1], current_alert[2], current_alert[3]
-    # get_user_alerts는 (alert_id, target_region, target_budget, interest_type) 순서이므로 1, 2, 3 인덱스 사용
-    if alert_id > 0 and len(current_alert) > 4: # get_specific_alert는 (alert_id, user_id, target_region, target_budget, interest_type)
+    if alert_id > 0 and len(current_alert) > 4:
         region, budget, interest_type = current_alert[2], current_alert[3], current_alert[4]
     
     notices = []
-    # 네이버 부동산 스캔
     if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]):
         notices.extend(public_fetcher.fetch_naver_real_estate(region, budget, interest_type))
-    # 공공임대 스캔
     if any(k in interest_type for k in ["공공임대", "LH"]):
         lh = public_fetcher.fetch_lh_lease_notices(interest_type, region)
         if lh: notices.extend(lh)
-        
-    # SH 및 공실 스캔
     if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울", "전세임대"]):
         sh = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
         if sh: notices.extend(sh)
-        
-    # 일반분양 스캔
     if "분양" in interest_type or "청약" in interest_type:
         gen = public_fetcher.fetch_general_sales_notices(region)
         if gen: notices.extend(gen)
-        
-    # 실거래가 스캔
     if "실거래" in interest_type:
         rtms = public_fetcher.fetch_real_transaction_prices(region, interest_type, budget)
         if rtms: notices.extend(rtms)
         
-    # 기존에 보여줬던 매물(DB에 저장된 발송 이력) 필터링
-    from notification_db import mark_notice_sent
-    
-    # 매번 검색할 때마다 DB에 전부 마킹하여 스케줄러 중복 알림 차단
     for n in notices:
         mark_notice_sent(user_id, n["id"])
         
@@ -750,34 +744,35 @@ def get_more_listings(
         
     display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3
     
-    offset = USER_UI_CURSOR.get(str(alert_id), 0)
-    next_items = notices[offset : offset + display_limit]
-    
-    # 리스트 끝에 도달해서 부족한 경우 처음부터 롤링(Looping)
-    is_looped = False
-    if len(next_items) < display_limit and len(notices) >= display_limit:
-        deficit = display_limit - len(next_items)
-        next_items.extend(notices[:deficit])
-        USER_UI_CURSOR[str(alert_id)] = deficit
-        is_looped = True
-    elif len(next_items) < display_limit:
+    if reset:
         USER_UI_CURSOR[str(alert_id)] = 0
-        is_looped = True
-    else:
-        USER_UI_CURSOR[str(alert_id)] = offset + display_limit
+        
+    offset = USER_UI_CURSOR.get(str(alert_id), 0)
+    
+    if offset >= len(notices):
+        return json.dumps({
+            "status": "SUCCESS",
+            "message": f"현재 위 조건에 부합하는 매물이 총 {len(notices)}개뿐이라 이미 처음부터 끝까지 모두 보여드렸습니다!\n\n24시간 스케줄러가 감시 중이니 신규 매물이 뜨면 카톡으로 즉시 알려드릴게요.\n(기존 매물을 다시 보시려면 '기존 매물 다시 보여줘'라고 입력해주세요.)"
+        }, ensure_ascii=False)
 
-    if is_looped or offset == 0:
-        msg = f"네! 기존 매물들을 다시 **처음부터 롤링하여 {len(next_items)}개**를 보여드립니다.\n\n"
-    else:
-        msg = f"네! 이전에 보지 못하셨던 **다음 순위 매물 {len(next_items)}개**를 이어서 보여드립니다.\n\n"
+    next_items = notices[offset : offset + display_limit]
+    USER_UI_CURSOR[str(alert_id)] = offset + display_limit
+
+    msg = ""
+    if reset:
+        msg = f"네! 요청하신 대로 기존에 찾았던 매물들을 처음부터 다시 보여드립니다.\n\n"
         
     for idx, n in enumerate(next_items, 1):
-        msg += f"[{idx}] {n['title']}\n👉 바로가기 주소: {n.get('url', n.get('link', '링크 없음'))}\n\n"
+        url_str = n.get('url', n.get('link', ''))
+        if url_str:
+            msg += f"[{offset + idx}] {n['title']}\n👉 바로가기 주소: {url_str}\n\n"
+        else:
+            msg += f"- {n['title']}\n"
         
-    if is_looped or len(notices) <= display_limit:
-        msg += "💡 (모든 매물을 확인하셨습니다. 계속해서 롤링 검색이 가능하며, 신규 매물은 카톡 알림으로 별도 전송됩니다.)\n\n"
+    if offset + display_limit >= len(notices):
+        msg += "💡 (검색된 매물을 모두 보여드렸습니다! 더 이상 숨겨진 매물이 없습니다. 24시간 스케줄러 감시를 통해 신규 매물이 뜨면 알림으로 알려드릴게요. 기존 매물을 다시 보시려면 '기존 매물 다시 보여줘'라고 입력하세요.)\n\n"
     else:
-        msg += "💡 (아직 보여드리지 않은 매물이 더 있습니다. 다른 매물을 원하시면 '다른 매물 보여줘'라고 입력하세요!)\n\n"
+        msg += "💡 (아직 보여드리지 않은 추가 매물이 더 있습니다. 다른 매물을 원하시면 '다른 매물 보여줘'라고 입력하세요!)\n\n"
         
     msg += "※ 링크(URL)는 클릭 가능하도록 원본 주소 그대로 출력되었습니다."
     
