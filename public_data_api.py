@@ -15,13 +15,19 @@ class PublicDataFetcher:
         
     def _fetch_from_api(self, url: str, params: dict):
         """실제 API 서버와 통신을 시도합니다. (실패 시 None 반환)"""
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            return response.text
-        except Exception as e:
-            print(f"[!] API 통신 실패 (키 미동기화 또는 서버 다운). Fallback 모드로 전환합니다: {e}")
-            return None
+        import time
+        import requests
+        for attempt in range(3):
+            try:
+                response = requests.get(url, params=params, timeout=15)
+                response.raise_for_status()
+                return response.text
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(1)
+                    continue
+                print(f"[!] API 통신 실패 (키 미동기화 또는 서버 다운). Fallback 모드로 전환합니다: {e}")
+                return None
 
     def check_building_ledger(self, address: str, property_type: str = "주택", business_type: str = ""):
         """[HYBRID] 건축물대장 및 토지이용계획을 조회하여 불법 여부, 용도, 용적률, 그린벨트 등을 판독합니다."""
