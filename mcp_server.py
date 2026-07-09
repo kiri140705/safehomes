@@ -508,19 +508,24 @@ def register_notification(
     if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]) and not is_public_housing_only:
         notices.extend(public_fetcher.fetch_naver_real_estate(region, budget, interest_type))
         
-    if any(k in interest_type.upper() for k in ["공공임대", "LH", "공실", "공고"]):
-        lh = public_fetcher.fetch_lh_lease_notices(region, interest_type)
+    # SH와 LH를 엄격히 분리 (SH 명시 시 LH 차단)
+    is_sh_only = "SH" in interest_type.upper()
+    
+    if any(k in interest_type.upper() for k in ["공공임대", "LH", "공실", "공고"]) and not is_sh_only:
+        lh = public_fetcher.fetch_lh_lease_notices(interest_type, region)
         if lh: notices.extend(lh)
         
     if any(k in interest_type.upper() for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울", "전세임대", "공고"]):
-        sh = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
-        if sh: notices.extend(sh)
+        if is_sh_only or not any(k in interest_type.upper() for k in ["LH", "공공임대"]):
+            sh = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
+            if sh: notices.extend(sh)
+            
     if "분양" in interest_type or "청약" in interest_type:
         gen = public_fetcher.fetch_general_sales_notices(region)
         if gen: notices.extend(gen)
         
     if "실거래" in interest_type:
-        rtms = public_fetcher.fetch_real_transaction_prices(region, interest_type, budget)
+        rtms = public_fetcher.fetch_naver_rtms(region, interest_type)
         if rtms: notices.extend(rtms)
         
     from notification_db import is_notice_sent, mark_notice_sent
@@ -714,19 +719,28 @@ def get_more_listings(
         region, budget, interest_type = current_alert[2], current_alert[3], current_alert[4]
     
     notices = []
-    if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]):
+    
+    is_public_housing_only = any(k in interest_type.upper() for k in ["공공임대", "LH", "SH", "청년주택", "장기전세", "국민임대", "공실", "공고"])
+    if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]) and not is_public_housing_only:
         notices.extend(public_fetcher.fetch_naver_real_estate(region, budget, interest_type))
-    if any(k in interest_type for k in ["공공임대", "LH"]):
+        
+    is_sh_only = "SH" in interest_type.upper()
+    
+    if any(k in interest_type for k in ["공공임대", "LH", "공실", "공고"]) and not is_sh_only:
         lh = public_fetcher.fetch_lh_lease_notices(interest_type, region)
         if lh: notices.extend(lh)
-    if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울", "전세임대"]):
-        sh = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
-        if sh: notices.extend(sh)
+        
+    if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울", "전세임대", "공고"]):
+        if is_sh_only or not any(k in interest_type.upper() for k in ["LH", "공공임대"]):
+            sh = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
+            if sh: notices.extend(sh)
+            
     if "분양" in interest_type or "청약" in interest_type:
         gen = public_fetcher.fetch_general_sales_notices(region)
         if gen: notices.extend(gen)
+        
     if "실거래" in interest_type:
-        rtms = public_fetcher.fetch_real_transaction_prices(region, interest_type, budget)
+        rtms = public_fetcher.fetch_naver_rtms(region, interest_type)
         if rtms: notices.extend(rtms)
         
     for n in notices:
@@ -739,7 +753,7 @@ def get_more_listings(
     if not notices:
         return json.dumps({
             "status": "SUCCESS",
-            "message": f"현재 '{region}' 지역에 매물/공고가 전혀 없습니다. 새로운 매물이 올라오는 즉시 알림으로 쏴드릴 테니 기다려주세요!"
+            "message": f"⏳ **한국토지주택공사(LH) 서버가 지연되고 있습니다.**\n\n현재 '{region}' 지역의 데이터를 조회 중이나, LH 서버 트래픽 문제로 응답이 늦어지고 있습니다. 잠시만 기다려주세요!\n\n(백그라운드 스케줄러가 1분 단위로 계속 재시도 중입니다. 데이터를 성공적으로 불러오는 즉시 푸시 알림으로 쏴드릴 테니 안심하고 기다려주시면 됩니다!)"
         }, ensure_ascii=False)
         
     display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3

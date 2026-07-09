@@ -2229,3 +2229,96 @@ class PublicDataFetcher:
                 
         return notices
 
+
+    def fetch_naver_rtms(self, region: str, interest_type: str = ""):
+        """네이버 부동산 실거래가 핀셋 파싱 (국토부 API 타임아웃 대체용)"""
+        import requests, json, urllib.parse
+        import datetime
+        import re
+        
+        target_apt = region.strip()
+        if not target_apt or target_apt in ["서울", "경기", "인천", "전국"]:
+            for word in interest_type.split():
+                if "아파트" in word or "자이" in word or "푸르지오" in word or "래미안" in word:
+                    target_apt = word
+                    break
+            
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://new.land.naver.com/",
+            "Origin": "https://new.land.naver.com",
+        }
+        
+        q = urllib.parse.quote(target_apt)
+        url = f"https://new.land.naver.com/api/search?keyword={q}"
+        
+        notices = []
+        try:
+            res = requests.get(url, headers=headers, timeout=5)
+            if res.status_code != 200:
+                return []
+                
+            data = res.json()
+            complexes = data.get('complexes', [])
+            if not complexes:
+                return []
+                
+            c_id = complexes[0]['complexNo']
+            c_name = complexes[0]['complexName']
+            
+            type_url = f"https://new.land.naver.com/api/complexes/{c_id}?sameAddressGroup=false"
+            res2 = requests.get(type_url, headers=headers, timeout=5)
+            c_data = res2.json()
+            ptp_list = c_data.get('complexPyeongDetailList', [])
+            
+            # 평형 필터
+            target_pyeong = 0
+            pm = re.search(r'(\d+)평', interest_type)
+            if pm: target_pyeong = int(pm.group(1))
+            
+            for p in ptp_list:
+                pyeong_nm = p.get('pyeongNm', '')
+                try:
+                    pyeong_val = int(re.sub(r'[^0-9]', '', pyeong_nm))
+                except:
+                    pyeong_val = 0
+                
+                # 타겟 평수가 명시되었으면 해당 평수만, 아니면 전부
+                if target_pyeong > 0 and abs(pyeong_val - target_pyeong) > 5:
+                    continue
+                    
+                ptp_no = p.get('ptpNo')
+                current_year = datetime.datetime.now().year
+                
+                rtms_url = f"https://new.land.naver.com/api/complexes/{c_id}/prices/real?complexNo={c_id}&tradeType=A1&year={current_year}&ptpNo={ptp_no}&priceChartChange=false"
+                res3 = requests.get(rtms_url, headers=headers, timeout=5)
+                r_data = res3.json()
+                real_prices = r_data.get('realPriceList', [])
+                
+                if not real_prices:
+                    # 이번 해에 없으면 작년 조회
+                    rtms_url = f"https://new.land.naver.com/api/complexes/{c_id}/prices/real?complexNo={c_id}&tradeType=A1&year={current_year-1}&ptpNo={ptp_no}&priceChartChange=false"
+                    res3 = requests.get(rtms_url, headers=headers, timeout=5)
+                    r_data = res3.json()
+                    real_prices = r_data.get('realPriceList', [])
+                    
+                if real_prices:
+                    latest = real_prices[0]
+                    trade_date = f"{latest.get('formattedTradeYear')}.{latest.get('tradeMonth')}.{latest.get('tradeDate')}"
+                    price = latest.get('dealPrice')
+                    floor = f"{latest.get('floor')}층" if latest.get('floor') else "중층"
+                    
+                    # 핀셋 포맷: 아파트명 / 타입(a,b,c 등) / 층수 / 날짜 / 거래가
+                    title = f"{c_name} / {pyeong_nm} / {floor} / {trade_date} / {price}"
+                    notices.append({
+                        "id": f"RTMS_{c_id}_{ptp_no}_{trade_date.replace('.','')}",
+                        "title": title,
+                        "url": "", # 실거래가는 링크 띄우지 말라고 함
+                        "date": trade_date
+                    })
+                    
+            return notices
+        except Exception as e:
+            print(f"[!] 네이버 실거래가 파싱 실패: {e}")
+            return []
