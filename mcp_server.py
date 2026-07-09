@@ -1,5 +1,20 @@
 # -*- coding: utf-8 -*-
 import json
+import threading
+
+def fetch_with_timeout(fetch_func, *args, timeout=10):
+    result = []
+    def target():
+        try:
+            result.extend(fetch_func(*args))
+        except Exception as e:
+            print(f"Fetch error: {e}")
+    t = threading.Thread(target=target)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        print("Fetch timed out, returning empty to prevent KakaoBot failure.")
+    return result
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 from mcp.server.fastmcp import FastMCP
@@ -491,7 +506,7 @@ def register_notification(
     user_id: Annotated[str, Field(description="알림을 받을 유저의 고유 식별자(전화번호 또는 카톡/텔레그램 ID). 모를 경우 '고객'")] = "고객",
     region: Annotated[str, Field(description="알림을 원하는 타겟 지역 (예: '마포구', '합정동', '전국')")] = "전국",
     budget: Annotated[int, Field(description="최대 예산 또는 월세 조건 (단위: 만원)")] = 0,
-    interest_type: Annotated[str, Field(description="관심 분야 ('공공임대', '일반분양', '상가', '아파트', '실거래가' 등)")] = "공공임대"
+    interest_type: Annotated[str, Field(description="사용자가 입력한 매물 조건 전체 원문 그대로 기재 (예: '20평대 아파트 전세', '영등포아트자이 실거래가', '상가 월세' 등. 절대 임의로 요약하거나 '실거래가' 단어 하나만 기재하지 말 것.)")] = "공공임대"
 ) -> str:
     # DB에 저장
     alert_id = register_user_alert(user_id, region, budget, interest_type)
@@ -506,7 +521,7 @@ def register_notification(
     is_public_housing_only = any(k in interest_type.upper() for k in ["공공임대", "LH", "SH", "청년주택", "장기전세", "국민임대", "공실", "공고"])
     
     if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]) and not is_public_housing_only:
-        notices.extend(public_fetcher.fetch_naver_real_estate(region, budget, interest_type))
+        notices.extend(fetch_with_timeout(public_fetcher.fetch_naver_real_estate, region, budget, interest_type, timeout=12))
         
     # SH와 LH를 엄격히 분리 (SH 명시 시 LH 차단)
     is_sh_only = "SH" in interest_type.upper()
@@ -725,7 +740,7 @@ def get_more_listings(
     
     is_public_housing_only = any(k in interest_type.upper() for k in ["공공임대", "LH", "SH", "청년주택", "장기전세", "국민임대", "공실", "공고"])
     if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]) and not is_public_housing_only:
-        notices.extend(public_fetcher.fetch_naver_real_estate(region, budget, interest_type))
+        notices.extend(fetch_with_timeout(public_fetcher.fetch_naver_real_estate, region, budget, interest_type, timeout=12))
         
     is_sh_only = "SH" in interest_type.upper()
     
