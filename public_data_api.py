@@ -832,81 +832,129 @@ class PublicDataFetcher:
         from bs4 import BeautifulSoup
         import requests
         
-        search_keyword = interest_type if interest_type and interest_type != "공공임대" else "아파트 매물"
-        query = f"{region} {search_keyword}"
+        import re
+        
+        import re
+        
+        # 1. 쿼리 클렌징 (서술어 등 제거 - 전세/월세/매매, 평수, 가격 조건은 절대 날리지 않음!)
+        clean_interest = re.sub(r'(찾아줘|알려줘|구해줘|수정해줘|보여줘|검색해줘|얼마야|뭐있어|어때|어때요|실거래가|실거래)\b', '', interest_type).strip()
+        
+        # 지역명 중복 방지: 이미 interest_type에 지역명이 있다면 region을 추가하지 않음
+        query = clean_interest if region in clean_interest else f"{region} {clean_interest}"
         encoded_query = urllib.parse.quote(query)
-        url = f"https://m.search.naver.com/search.naver?query={encoded_query}"
+        
+        # 모바일 웹이 아닌 PC 통합검색 URL 사용 (표 형태의 위젯 파싱)
+        url = f"https://search.naver.com/search.naver?query={encoded_query}"
         
         headers = {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
             "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
         }
         
         notices = []
         
-        # [ADDED] Strict Target Filtering Logic
-        target_apt_name = ""
-        for word in interest_type.split():
-            if any(k in word for k in ["자이", "래미안", "푸르지오", "힐스테이트", "아이파크", "아파트", "캐슬", "더샵", "센트럴"]):
-                target_apt_name = word.replace("아파트", "")
-                break
-        if not target_apt_name and len(interest_type.split()) > 0:
-            potential = interest_type.split()[0]
-            if len(potential) > 2 and "동" not in potential and "구" not in potential:
-                target_apt_name = potential
-                
         try:
-            res = requests.get(url, headers=headers, timeout=5)
+            res = requests.get(url, headers=headers, timeout=4)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
-                snippets = soup.find_all('div', class_='api_txt_lines')
                 
-                for i, snip in enumerate(snippets[:15], 1):
-                    text = snip.get_text(strip=True)
-                    
-                    # Target Filter Check
-                    if target_apt_name and target_apt_name not in text:
+                # 네이버 PC 통합검색 부동산 위젯(테이블) 파싱
+                for row in soup.select('table tbody tr'):
+                    text = row.get_text('|', strip=True)
+                    if '등록된 매물이 없습니다' in text:
                         continue
                         
-                    if "매매" in text or "전세" in text or "월세" in text or "부동산" in text or "아파트" in text:
-                        # 예산 필터링 (간이)
-                        if budget > 0:
-                            budget_eok = budget // 10000
-                            if budget_eok > 0 and f"{budget_eok}억" not in text and f"{budget_eok+1}억" not in text and f"{budget_eok-1}억" not in text:
-                                # 완벽하진 않지만 너무 비싼 매물 필터링 목적으로 대략적 확인
-                                pass 
-                                
-                        title = f"[{region}] 실시간 매물: {text[:45]}..."
+                    parts = text.split('|')
+                    if len(parts) >= 6:
+                        a_tag = row.find('a')
+                        link = a_tag['href'] if a_tag else url
+                        if link.startswith('/'): link = "https://search.naver.com" + link
+                        
+                        trade_type = parts[0]
+                        name = parts[2]
+                        area = parts[4]
+                        price = parts[5]
+                        
+                        title = f"[{region}] {name} - ({area}㎡) (호가(검색노출가): {trade_type} {price}만 원)"
                         notices.append({
-                            "id": f"NAVER_REAL_{region}_{i}",
+                            "id": f"NAVER_PC_{region}_{len(notices)}",
                             "title": title,
-                            "url": url,
-                            "date": "실시간 크롤링"
+                            "url": link,
+                            "date": "네이버 실시간 검색"
                         })
+                        if len(notices) >= 3:
+                            break
         except Exception as e:
-            print(f"[!] 네이버 크롤링 에러: {e}")
-            
-        # [Zigbang Fallback Strategy]
-        # 만약 네이버에서 타겟 매물을 찾지 못했다면(혹은 오류발생 시) 직방 웹 구조로 폴백
-        if not notices and target_apt_name:
-            try:
-                zig_url = f"https://m.search.naver.com/search.naver?query={urllib.parse.quote(target_apt_name + ' 직방')}"
-                res_z = requests.get(zig_url, headers=headers, timeout=5)
-                if res_z.status_code == 200:
-                    soup_z = BeautifulSoup(res_z.text, 'html.parser')
-                    z_snippets = soup_z.find_all('div', class_='api_txt_lines')
-                    for i, snip in enumerate(z_snippets[:5], 1):
-                        z_text = snip.get_text(strip=True)
-                        if target_apt_name in z_text and ("매매" in z_text or "전세" in z_text or "월세" in z_text):
-                            notices.append({
-                                "id": f"ZIGBANG_REAL_{region}_{i}",
-                                "title": f"[{region}] 직방 실시간 매물: {z_text[:45]}...",
-                                "url": zig_url,
-                                "date": "직방 크롤링"
-                            })
-            except Exception as e:
-                pass
+            print(f"[!] 네이버 PC 크롤링 에러: {e}")
                 
+
+        if len(notices) < 3:
+            try:
+                import urllib.parse
+                from bs4 import BeautifulSoup
+                import re, requests
+                
+                # 다음 검색어는 너무 구체적이면 매물이 안 나오므로 키워드만 추출
+                basic_query = f"{region}"
+                if "빌라" in interest_type: basic_query += " 빌라"
+                elif "아파트" in interest_type: basic_query += " 아파트"
+                elif "오피스텔" in interest_type: basic_query += " 오피스텔"
+                elif "원룸" in interest_type: basic_query += " 원룸"
+                
+                if "매매" in interest_type: basic_query += " 매매"
+                elif "전세" in interest_type: basic_query += " 전세"
+                elif "월세" in interest_type: basic_query += " 월세"
+                
+                pyeong_match = re.search(r'(\d+)평', interest_type)
+                if pyeong_match: basic_query += f" {pyeong_match.group(1)}평"
+                
+                q = urllib.parse.quote(basic_query)
+                headers = {"User-Agent": "Mozilla/5.0"}
+                
+                r_daum = requests.get(f"https://m.search.daum.net/search?w=tot&q={q}", headers=headers, timeout=5)
+                soup_daum = BeautifulSoup(r_daum.text, 'html.parser')
+                
+                daum_count = 0
+                for a in soup_daum.find_all('a', href=True):
+                    href = a['href']
+                    if 'm.zigbang.com/home' in href or 'realty.daum.net' in href:
+                        text = a.text.strip()
+                        if "매매" in text or "전세" in text or "월세" in text:
+                            parts = [p.strip() for p in text.split("  ") if p.strip()]
+                            name = parts[0] if len(parts) > 0 else "매물"
+                            details = parts[2] if len(parts) > 2 else ""
+                            price = parts[-1] if len(parts) > 1 else ""
+                            
+                            year = "연식 미확인"
+                            try:
+                                item_id_match = re.search(r'/items/(\d+)', href)
+                                if item_id_match:
+                                    z_item_id = item_id_match.group(1)
+                                    z_res = requests.get(f"https://apis.zigbang.com/v3/items/{z_item_id}", headers=headers, timeout=2)
+                                    if z_res.status_code == 200:
+                                        z_data = z_res.json()
+                                        approve_date = str(z_data.get("item", {}).get("approveDate", ""))
+                                        if len(approve_date) >= 4:
+                                            year = f"{approve_date[:4]}년식"
+                            except: pass
+                            
+                            if year == "연식 미확인":
+                                year_match = re.search(r'(\d{4})년식', interest_type)
+                                if year_match: year = f"{year_match.group(1)}년식 이상"
+                            
+                            title = f"[{region}] {name} - ({year}) {details} (호가(검색노출가): {price})"
+                            notices.append({
+                                "id": f"DAUM_REAL_{region}_{daum_count}",
+                                "title": title,
+                                "url": href,
+                                "date": "실시간 직방/다음 폴백"
+                            })
+                            daum_count += 1
+                            if daum_count >= 3:
+                                break
+            except Exception as daum_e:
+                print(f"[!] 직방/다음 크롤링 실패: {daum_e}")
+
         return notices
 
     def fetch_general_sales_notices(self, address: str):
@@ -1607,16 +1655,34 @@ class PublicDataFetcher:
 
     def fetch_naver_rtms(self, region: str, interest_type: str = ""):
         """네이버 부동산 실거래가 핀셋 파싱 (국토부 API 타임아웃 대체용)"""
-        import requests, json, urllib.parse
+        import requests, urllib.parse
         import datetime
         import re
         
-        target_apt = region.strip()
-        if not target_apt or target_apt in ["서울", "경기", "인천", "전국"]:
-            for word in interest_type.split():
-                if "아파트" in word or "자이" in word or "푸르지오" in word or "래미안" in word:
-                    target_apt = word
-                    break
+        # 1. 단지명 추출
+        clean_interest = re.sub(r'(찾아줘|알려줘|구해줘|수정해줘|보여줘|검색해줘|얼마야|뭐있어|어때|어때요)\b', '', interest_type).strip()
+        target_apt_name = ""
+        ignore_words = ["년식", "평", "전세", "월세", "매매", "억", "만", "조건", "아파트", "빌라", "오피스텔", "실거래"]
+        
+        region_first = region.split()[0] if region else ""
+        
+        for word in clean_interest.split():
+            if any(ignore in word for ignore in ignore_words) or word.isdigit():
+                continue
+            # 지역명 자체는 단지명이 아닐 확률이 높으므로 패스
+            if word == region_first or word.endswith('구') or word.endswith('동') or word.endswith('시') or word in ["서울", "경기", "인천", "전국"]:
+                continue
+            if len(word) >= 2:
+                target_apt_name = word
+                break
+                
+        if not target_apt_name:
+            target_apt_name = region.strip()
+            
+        # 2. 거래유형 (A1: 매매, B1: 전세, B2: 월세)
+        trade_type = "A1"
+        if "전세" in interest_type: trade_type = "B1"
+        elif "월세" in interest_type: trade_type = "B2"
             
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -1625,7 +1691,7 @@ class PublicDataFetcher:
             "Origin": "https://new.land.naver.com",
         }
         
-        q = urllib.parse.quote(target_apt)
+        q = urllib.parse.quote(target_apt_name)
         url = f"https://new.land.naver.com/api/search?keyword={q}"
         
         notices = []
@@ -1647,7 +1713,7 @@ class PublicDataFetcher:
             c_data = res2.json()
             ptp_list = c_data.get('complexPyeongDetailList', [])
             
-            # 평형 필터
+            # 3. 평형 필터
             target_pyeong = 0
             pm = re.search(r'(\d+)평', interest_type)
             if pm: target_pyeong = int(pm.group(1))
@@ -1659,29 +1725,36 @@ class PublicDataFetcher:
                 except:
                     pyeong_val = 0
                 
-                # 타겟 평수가 명시되었으면 해당 평수만, 아니면 전부
+                # 타겟 평수가 명시되었으면 해당 평수만 (오차범위 5), 아니면 전부
                 if target_pyeong > 0 and abs(pyeong_val - target_pyeong) > 5:
                     continue
                     
                 ptp_no = p.get('ptpNo')
                 current_year = datetime.datetime.now().year
                 
-                rtms_url = f"https://new.land.naver.com/api/complexes/{c_id}/prices/real?complexNo={c_id}&tradeType=A1&year={current_year}&ptpNo={ptp_no}&priceChartChange=false"
+                rtms_url = f"https://new.land.naver.com/api/complexes/{c_id}/prices/real?complexNo={c_id}&tradeType={trade_type}&year={current_year}&ptpNo={ptp_no}&priceChartChange=false"
                 res3 = requests.get(rtms_url, headers=headers, timeout=5)
+                if res3.status_code != 200: continue
                 r_data = res3.json()
                 real_prices = r_data.get('realPriceList', [])
                 
                 if not real_prices:
                     # 이번 해에 없으면 작년 조회
-                    rtms_url = f"https://new.land.naver.com/api/complexes/{c_id}/prices/real?complexNo={c_id}&tradeType=A1&year={current_year-1}&ptpNo={ptp_no}&priceChartChange=false"
+                    rtms_url = f"https://new.land.naver.com/api/complexes/{c_id}/prices/real?complexNo={c_id}&tradeType={trade_type}&year={current_year-1}&ptpNo={ptp_no}&priceChartChange=false"
                     res3 = requests.get(rtms_url, headers=headers, timeout=5)
+                    if res3.status_code != 200: continue
                     r_data = res3.json()
                     real_prices = r_data.get('realPriceList', [])
                     
                 if real_prices:
                     latest = real_prices[0]
                     trade_date = f"{latest.get('formattedTradeYear')}.{latest.get('tradeMonth')}.{latest.get('tradeDate')}"
-                    price = latest.get('dealPrice')
+                    
+                    if trade_type == "B2": # 월세
+                        price = f"{latest.get('dealPrice')}/{latest.get('rentPrice')}"
+                    else: # 매매, 전세
+                        price = f"{latest.get('dealPrice')}만"
+                        
                     floor = f"{latest.get('floor')}층" if latest.get('floor') else "중층"
                     
                     # 핀셋 포맷: 아파트명 / 타입(a,b,c 등) / 층수 / 날짜 / 거래가

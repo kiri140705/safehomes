@@ -15,6 +15,30 @@ def fetch_with_timeout(fetch_func, *args, timeout=10):
     if t.is_alive():
         print("Fetch timed out, returning empty to prevent KakaoBot failure.")
     return result
+
+import time
+def fetch_all_parallel(tasks, global_timeout=4.0):
+    results = []
+    threads = []
+    for func, args in tasks:
+        def target(f, a):
+            try:
+                res = f(*a)
+                if res:
+                    results.extend(res)
+            except Exception as e:
+                print(f"Fetch error: {e}")
+        t = threading.Thread(target=target, args=(func, args))
+        t.start()
+        threads.append(t)
+    
+    start_time = time.time()
+    for t in threads:
+        remaining = global_timeout - (time.time() - start_time)
+        if remaining > 0:
+            t.join(remaining)
+            
+    return results
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 from mcp.server.fastmcp import FastMCP
@@ -528,32 +552,32 @@ def register_notification(
     msg = f"[{user_id}] 님의 알림 등록이 완료되었습니다.\n\n타겟 지역: {region}\n관심 분야: {interest_type}\n예산 조건: {budget_display}\n지금부터 24시간 실시간 감시를 시작합니다.\n\n"
     
     # 즉시 초기 1회 스캔 수행 (유저가 바로 결과를 보고 싶어하는 경우 대응)
-    notices = []
+    fetch_tasks = []
     
     is_public_housing_only = any(k in interest_type.upper() for k in ["공공임대", "LH", "SH", "청년주택", "장기전세", "국민임대", "공실", "공고"])
     
     if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]) and not is_public_housing_only:
-        notices.extend(fetch_with_timeout(public_fetcher.fetch_naver_real_estate, region, budget, interest_type, timeout=12))
+        fetch_tasks.append((public_fetcher.fetch_naver_real_estate, (region, budget, interest_type)))
         
     # SH와 LH를 엄격히 분리 (SH 명시 시 LH 차단)
     is_sh_only = "SH" in interest_type.upper()
     
     if any(k in interest_type.upper() for k in ["공공임대", "LH", "공실", "공고"]) and not is_sh_only:
-        lh = public_fetcher.fetch_lh_lease_notices(interest_type, region)
-        if lh: notices.extend(lh)
+        fetch_tasks.append((public_fetcher.fetch_lh_lease_notices, (interest_type, region)))
         
     if any(k in interest_type.upper() for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울", "전세임대", "공고"]):
         if is_sh_only or not any(k in interest_type.upper() for k in ["LH", "공공임대"]):
-            sh = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
-            if sh: notices.extend(sh)
+            fetch_tasks.append((public_fetcher.fetch_sh_vacancy_and_plans, (region, interest_type)))
             
     if "분양" in interest_type or "청약" in interest_type:
-        gen = public_fetcher.fetch_general_sales_notices(region)
-        if gen: notices.extend(gen)
+        fetch_tasks.append((public_fetcher.fetch_general_sales_notices, (region,)))
         
-    if "실거래" in interest_type:
-        rtms = public_fetcher.fetch_naver_rtms(region, interest_type)
-        if rtms: notices.extend(rtms)
+    if is_rtms:
+        fetch_tasks.append((public_fetcher.fetch_naver_rtms, (region, interest_type)))
+        fetch_tasks.append((public_fetcher.fetch_real_transaction_prices, (region, interest_type, budget)))
+        
+    # 병렬로 가져오되 2.5초 내에 무조건 종료하여 카카오 5초 타임아웃 100% 방어
+    notices = fetch_all_parallel(fetch_tasks, global_timeout=2.5)
         
     from notification_db import is_notice_sent, mark_notice_sent
     
@@ -590,7 +614,7 @@ def register_notification(
         msg += "※ 링크(URL)는 클릭 가능하도록 원본 주소 그대로 출력되었습니다."
     else:
         if is_public_housing_only:
-            msg += f"\n\n🚨 한국토지주택공사 서버가 지연되고 있습니다. 잠시만 기다려주세요\n(현재 위 조건에 새로 올라온 매물/공고가 없습니다. 새로운 정보가 뜨는 즉시 카톡으로 알림을 드리겠습니다!)"
+            msg += f"\n\n🚨 한국토지주택공사 서버가 지연되고 있습니다. 다시 시도해 주시겠습니까?\n(공고가 뜨는 즉시 카톡으로 알림을 드리겠습니다!)"
         else:
             msg += "🔎 현재 위 조건에 새로 올라온 매물/공고가 없습니다. 새로운 정보가 뜨는 즉시 카톡으로 알림을 쏴드리겠습니다!"
 
@@ -766,30 +790,31 @@ def get_more_listings(
     if alert_id > 0 and len(current_alert) > 4:
         region, budget, interest_type = current_alert[2], current_alert[3], current_alert[4]
     
-    notices = []
+    fetch_tasks = []
     
+    is_rtms = "실거래" in interest_type
     is_public_housing_only = any(k in interest_type.upper() for k in ["공공임대", "LH", "SH", "청년주택", "장기전세", "국민임대", "공실", "공고"])
-    if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]) and not is_public_housing_only:
-        notices.extend(fetch_with_timeout(public_fetcher.fetch_naver_real_estate, region, budget, interest_type, timeout=12))
+    
+    if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]) and not is_public_housing_only and not is_rtms:
+        fetch_tasks.append((public_fetcher.fetch_naver_real_estate, (region, budget, interest_type)))
         
     is_sh_only = "SH" in interest_type.upper()
     
     if any(k in interest_type for k in ["공공임대", "LH", "공실", "공고"]) and not is_sh_only:
-        lh = public_fetcher.fetch_lh_lease_notices(interest_type, region)
-        if lh: notices.extend(lh)
+        fetch_tasks.append((public_fetcher.fetch_lh_lease_notices, (interest_type, region)))
         
     if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울", "전세임대", "공고"]):
         if is_sh_only or not any(k in interest_type.upper() for k in ["LH", "공공임대"]):
-            sh = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
-            if sh: notices.extend(sh)
+            fetch_tasks.append((public_fetcher.fetch_sh_vacancy_and_plans, (region, interest_type)))
             
     if "분양" in interest_type or "청약" in interest_type:
-        gen = public_fetcher.fetch_general_sales_notices(region)
-        if gen: notices.extend(gen)
+        fetch_tasks.append((public_fetcher.fetch_general_sales_notices, (region,)))
         
-    if "실거래" in interest_type:
-        rtms = public_fetcher.fetch_naver_rtms(region, interest_type)
-        if rtms: notices.extend(rtms)
+    if is_rtms:
+        fetch_tasks.append((public_fetcher.fetch_naver_rtms, (region, interest_type)))
+        fetch_tasks.append((public_fetcher.fetch_real_transaction_prices, (region, interest_type, budget)))
+        
+    notices = fetch_all_parallel(fetch_tasks, global_timeout=2.5)
         
     for n in notices:
         mark_notice_sent(user_id, n["id"])
@@ -802,7 +827,7 @@ def get_more_listings(
         if is_public_housing_only:
             return json.dumps({
                 "status": "SUCCESS",
-                "message": f"🚨 한국토지주택공사 서버가 지연되고 있습니다. 잠시만 기다려주세요\n(현재 위 조건에 새로 올라온 매물/공고가 없습니다. 새로운 정보가 뜨는 즉시 카톡으로 알림을 드리겠습니다!)",
+                "message": f"🚨 한국토지주택공사 서버가 지연되고 있습니다. 다시 시도해 주시겠습니까?\n(공고가 뜨는 즉시 카톡으로 알림을 드리겠습니다!)",
                 "system_instruction_for_llm": PARROT_INSTRUCTION
             }, ensure_ascii=False)
         else:
