@@ -364,12 +364,23 @@ class PublicDataFetcher:
             )
             
         # 2. 요식업/일반상권 (고깃집, 카페, 식당) -> analyze_commercial_area 재활용
-        elif any(k in query for k in ["상권", "창업", "장사", "상가", "고깃집", "식당", "카페", "수익", "프랜차이즈"]):
+        elif any(k in query for k in ["상권", "창업", "장사", "상가", "고깃집", "식당", "카페", "수익", "프랜차이즈", "오픈", "업종", "매장", "삼겹살", "대패", "회식"]):
             target_region = address if address and address != "전국" else "서울 합정동(예시)"
             actual_biz = business_type if business_type else "고깃집/식당"
             
             # 파이썬 내부 상권 분석 모듈 강제 호출
             commercial_data = self.analyze_commercial_area(target_region, actual_biz, monthly_rent)
+            
+            # 중개수수료(복비) 계산 로직 추가
+            fee_msg = ""
+            if monthly_rent > 0 or deposit > 0:
+                fee_info = self.calculate_brokerage_fee(deposit, monthly_rent, "월세" if monthly_rent > 0 else "전세", "상가")
+                total_fee = fee_info['max_fee'] + fee_info['vat_general']
+                fee_msg = (
+                    f"💸 **[예상 중개수수료 (부동산 복비)]**\n"
+                    f"- 보증금 {deposit:,}만 원 + 월세 {monthly_rent:,}만 원 환산 기준\n"
+                    f"- 법정 최대 중개수수료(VAT 일반과세 포함): **{total_fee:,}원** (이 금액 초과 요구 시 불법입니다.)\n\n"
+                )
             
             return (
                 f"📊 **[{target_region} {actual_biz} 창업 정밀 시뮬레이션]**\n\n"
@@ -378,6 +389,7 @@ class PublicDataFetcher:
                 f"- **동종업계 추정 폐업률**: {commercial_data['closure_rate']}\n"
                 f"- **동종업계 월평균 매출**: {commercial_data['avg_monthly_sales']}\n"
                 f"- **주요 타겟 고객층**: {commercial_data['target_demographic']}\n\n"
+                f"{fee_msg}"
                 f"💡 **[초정밀 P&L 및 손익분기점 컨설팅]**\n"
                 f"{commercial_data['bep_analysis']}\n\n"
                 f"🚨 **[프랜차이즈 가맹 주의사항]**\n"
@@ -801,6 +813,42 @@ class PublicDataFetcher:
                                     break
                             if not match:
                                 continue
+                                
+                        # ----------------------------------------------------
+                        # 타겟 계층(Demographic) 및 임대 유형 충돌 방지 필터링
+                        # ----------------------------------------------------
+                        skip_notice = False
+                        
+                        # 1. 청년 검색 시 고령자/신혼 특화 배제 + 청년 관련 키워드 강제
+                        if "청년" in query:
+                            if any(k in title for k in ["고령자", "실버", "신혼희망"]):
+                                skip_notice = True
+                            elif not any(k in title for k in ["청년", "행복주택", "매입임대", "전세임대", "역세권", "안심주택"]):
+                                skip_notice = True
+                                
+                        # 2. 고령자 검색 시 청년/신혼 배제 + 고령자 관련 강제
+                        if "고령자" in query or "실버" in query:
+                            if any(k in title for k in ["청년", "신혼"]):
+                                skip_notice = True
+                            elif not any(k in title for k in ["고령자", "실버", "국민임대", "영구임대"]):
+                                skip_notice = True
+                                
+                        # 3. 신혼 검색 시 고령자/청년 배제
+                        if "신혼" in query:
+                            if any(k in title for k in ["고령자", "실버", "청년"]):
+                                if "신혼" not in title: 
+                                    skip_notice = True
+                                    
+                        # 4. 특정 임대 유형(국민임대, 영구임대, 행복주택 등) 지정 시 강제
+                        rental_types = ["국민임대", "영구임대", "행복주택", "매입임대", "장기전세"]
+                        for r_type in rental_types:
+                            if r_type in query and r_type not in title:
+                                skip_notice = True
+                                break
+                                
+                        if skip_notice:
+                            continue
+                        # ----------------------------------------------------
                         
                         # 유저가 '공실'을 명시적으로 찾되 '공고'라는 단어가 없을 경우에만 찐 공실(빈집) 데이터로 필터링
                         if ("공실" in query or "빈집" in query or "줍줍" in query) and "공고" not in query:
@@ -871,6 +919,10 @@ class PublicDataFetcher:
         if region and target_trade:
             if property_type:
                 queries_to_try.append(f"{region} {property_type} {target_trade}")
+                if target_pyeong > 0:
+                    # 네이버 위젯을 강력하게 찌르기 위해 평수 명시 쿼리 추가
+                    queries_to_try.append(f"{region} {target_pyeong}평 {property_type} {target_trade}")
+                    queries_to_try.append(f"{region} {target_pyeong}평대 {property_type} {target_trade}")
             queries_to_try.append(f"{region} {target_trade} 매물")
             
         headers = {
@@ -916,15 +968,18 @@ class PublicDataFetcher:
                                 if area_nums:
                                     area_val = int(area_nums[-1])
                                 pyeong = int(area_val / 3.3058)
-                                # 30평대(30~39) 또는 +-5평 오차 허용
+                                # 평수 필터링 (이상/이하/평대 지원)
                                 if "평대" in interest_type:
                                     if not (target_pyeong <= pyeong < target_pyeong + 10): continue
                                 else:
-                                    if not (target_pyeong - 5 <= pyeong <= target_pyeong + 5): continue
-                            
-                            if property_type and property_type not in name and property_type not in text:
-                                continue
-                                
+                                    clean_interest_no_space = interest_type.replace(" ", "")
+                                    if f"{target_pyeong}평이상" in clean_interest_no_space:
+                                        if pyeong < target_pyeong: continue
+                                    elif f"{target_pyeong}평이하" in clean_interest_no_space:
+                                        if pyeong > target_pyeong: continue
+                                    else:
+                                        if not (target_pyeong - 5 <= pyeong <= target_pyeong + 5): continue
+                            # (엄격한 property_type 문자열 검사 삭제: 위젯에 '아파트'라는 글자가 명시되지 않는 경우가 많으므로 검색 엔진의 자체 필터링을 신뢰함)
                             if "전세" in interest_type and "전세" not in trade_type: continue
                             if "월세" in interest_type and "월세" not in trade_type: continue
                             if "매매" in interest_type and "매매" not in trade_type: continue
@@ -1015,14 +1070,18 @@ class PublicDataFetcher:
                                         area_val = int(area_nums[-1])
                                     if area_val > 0:
                                         pyeong = int(area_val / 3.3058)
+                                        # 평수 필터링 (이상/이하/평대 지원)
                                         if "평대" in interest_type:
                                             if not (target_pyeong <= pyeong < target_pyeong + 10): continue
                                         else:
-                                            if not (target_pyeong - 5 <= pyeong <= target_pyeong + 5): continue
-                                
-                                if property_type and property_type not in name and property_type not in text:
-                                    continue
-                                
+                                            clean_interest_no_space = interest_type.replace(" ", "")
+                                            if f"{target_pyeong}평이상" in clean_interest_no_space:
+                                                if pyeong < target_pyeong: continue
+                                            elif f"{target_pyeong}평이하" in clean_interest_no_space:
+                                                if pyeong > target_pyeong: continue
+                                            else:
+                                                if not (target_pyeong - 5 <= pyeong <= target_pyeong + 5): continue
+                                # (엄격한 property_type 문자열 검사 삭제)
                                 if "전세" in interest_type and "전세" not in trade_type: continue
                                 if "월세" in interest_type and "월세" not in trade_type: continue
                                 if "매매" in interest_type and "매매" not in trade_type: continue
@@ -1221,10 +1280,11 @@ class PublicDataFetcher:
                         loc = item.get("BIZ_TRGT", "")
                         empty = float(item.get("EMPT_RM", 0))
                         if empty > 0 and (not region or region == "전국" or region in loc):
+                            search_q = urllib.parse.quote(f"SH 역세권 청년주택 {loc} 입주 공고")
                             notices.append({
                                 "id": f"SH_VAC_{loc}",
                                 "title": f"🚨 [긴급 줍줍/공실] {loc} (청년주택 즉시입주 가능 {int(empty)}세대)",
-                                "url": "https://www.i-sh.co.kr",
+                                "url": f"https://search.naver.com/search.naver?query={search_q}",
                                 "date": "현재 공실"
                             })
                 
@@ -1238,10 +1298,11 @@ class PublicDataFetcher:
                         loc = item.get("GU_NM", "")
                         name = item.get("HOU_NM", "")
                         if not region or region == "전국" or region in loc or region in name:
+                            search_q = urllib.parse.quote(f"SH 장기전세 {name} 공급 공고")
                             notices.append({
                                 "id": f"SH_PLAN_{name}",
                                 "title": f"📅 [공급 예고] {loc} {name} 장기전세주택 공급 예정",
-                                "url": "https://www.i-sh.co.kr",
+                                "url": f"https://search.naver.com/search.naver?query={search_q}",
                                 "date": "공급계획"
                             })
         except Exception as e:
@@ -1717,8 +1778,6 @@ class PublicDataFetcher:
         import re
         import time
         now = datetime.datetime.now()
-        if now.year > 2024:
-            now = now.replace(year=2024)
         lawd_cd = self._get_lawd_cd(region)
         
         # 최근 6개월 계산

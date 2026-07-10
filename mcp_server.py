@@ -608,7 +608,7 @@ def register_notification(
             else:
                 msg += f"- {n['title']}\n"
         
-        if len(notices) >= display_limit:
+        if len(notices) > display_limit:
             msg += "💡 (아직 보여드리지 않은 매물이 더 있습니다. 다른 매물을 원하시면 '다른 매물 보여줘'라고 입력하세요!)\n\n"
         else:
             msg += "💡 (현재 위 조건에 맞는 전체 매물을 모두 보여드렸습니다. 신규 매물이 발견되면 카톡으로 즉시 알려드릴게요!)\n\n"
