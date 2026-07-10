@@ -1556,96 +1556,106 @@ class PublicDataFetcher:
         # 타입(전용면적)별로 가장 최신 거래를 저장하기 위한 딕셔너리
         latest_by_type = {}
         
-        for deal_ymd in months:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        def fetch_month(deal_ymd):
             params = {"serviceKey": self.portal_api_key, "LAWD_CD": lawd_cd, "DEAL_YMD": deal_ymd}
-            
+            items = []
             try:
-                res = requests.get(url, params=params, timeout=15)
+                res = requests.get(url, params=params, timeout=5)
                 if res.status_code == 200:
                     root = ET.fromstring(res.text)
-                else:
-                    continue
-                for item in root.iter('item'):
-                    # 단지명
-                    name_tags = ['아파트', '단지', '연립다세대']
-                    complex_name = ""
-                    for tag in name_tags:
-                        node = item.find(tag)
-                        if node is not None and node.text:
-                            complex_name = node.text.strip()
-                            break
-                    
-                    if not complex_name: complex_name = "매물"
-                    
-                    # 아파트명 필터링
-                    if apt_name and apt_name not in complex_name and complex_name not in apt_name:
-                        continue
+                    for item in root.iter('item'):
+                        name_tags = ['아파트', '단지', '연립다세대']
+                        complex_name = ""
+                        for tag in name_tags:
+                            node = item.find(tag)
+                            if node is not None and node.text:
+                                complex_name = node.text.strip()
+                                break
                         
-                    # 평수 필터링
-                    area_node = item.find('전용면적')
-                    if area_node is not None and area_node.text:
-                        area = float(area_node.text)
-                        pyeong = int(area / 3.3058)
-                        if pyeong_target > 0:
-                            if not (pyeong_target - 5 <= pyeong <= pyeong_target + 5):
-                                continue
-                    else:
-                        pyeong = 0
+                        if not complex_name: complex_name = "매물"
                         
-                    # 가격
-                    price = 0
-                    price_str = ""
-                    deposit_node = item.find('보증금액')
-                    monthly_node = item.find('월세금액')
-                    trade_node = item.find('거래금액')
-                    
-                    if is_rent and deposit_node is not None:
-                        price = int(deposit_node.text.replace(',', '').strip()) * 10000
-                        monthly = int(monthly_node.text.replace(',', '').strip()) * 10000 if monthly_node is not None and monthly_node.text.strip() else 0
-                        
-                        deposit_str = f"{price//100000000}억{(price%100000000)//10000}만원" if price >= 100000000 else f"{price//10000}만원"
-                        deposit_str = deposit_str.replace("0만원", "")
-                        
-                        if monthly > 0:
-                            price_str = f"월세 {deposit_str}/{monthly//10000}만원"
-                        else:
-                            price_str = f"전세 {deposit_str}"
+                        if apt_name and apt_name not in complex_name and complex_name not in apt_name:
+                            continue
                             
-                        # 월세 필터링 (유저가 전세만 찾거나 월세만 찾을 때 필터)
-                        if "월세" in interest_type and "전세" not in interest_type and monthly == 0: continue
-                        if "전세" in interest_type and "월세" not in interest_type and monthly > 0: continue
+                        area_node = item.find('전용면적')
+                        if area_node is not None and area_node.text:
+                            area = float(area_node.text)
+                            pyeong = int(area / 3.3058)
+                            if pyeong_target > 0:
+                                if not (pyeong_target - 5 <= pyeong <= pyeong_target + 5):
+                                    continue
+                        else:
+                            pyeong = 0
+                            
+                        price = 0
+                        price_str = ""
+                        deposit_node = item.find('보증금액')
+                        monthly_node = item.find('월세금액')
+                        trade_node = item.find('거래금액')
+                        
+                        if is_rent and deposit_node is not None:
+                            price = int(deposit_node.text.replace(',', '').strip()) * 10000
+                            monthly = int(monthly_node.text.replace(',', '').strip()) * 10000 if monthly_node is not None and monthly_node.text.strip() else 0
+                            
+                            deposit_str = f"{price//100000000}억{(price%100000000)//10000}만원" if price >= 100000000 else f"{price//10000}만원"
+                            deposit_str = deposit_str.replace("0만원", "")
+                            
+                            if monthly > 0:
+                                price_str = f"월세 {deposit_str}/{monthly//10000}만원"
+                            else:
+                                price_str = f"전세 {deposit_str}"
+                                
+                            if "월세" in interest_type and "전세" not in interest_type and monthly == 0: continue
+                            if "전세" in interest_type and "월세" not in interest_type and monthly > 0: continue
 
-                    elif not is_rent and trade_node is not None:
-                        price = int(trade_node.text.replace(',', '').strip()) * 10000
-                        price_str = f"매매 {price//100000000}억{(price%100000000)//10000}만원"
-                        price_str = price_str.replace("0만원", "")
-                        
-                    # 예산 돌파/이하 로직
-                    if budget > 0:
-                        # 상승/돌파를 의미하는 키워드들 검사
-                        upward_keywords = ["돌파", "이상", "넘으면", "상승", "오르면", "위로", "도달", "되면", "튀면"]
-                        if any(k in interest_type for k in upward_keywords):
-                            if price < budget: continue
-                        else:
-                            if price > budget: continue
+                        elif not is_rent and trade_node is not None:
+                            price = int(trade_node.text.replace(',', '').strip()) * 10000
+                            price_str = f"매매 {price//100000000}억{(price%100000000)//10000}만원"
+                            price_str = price_str.replace("0만원", "")
                             
-                    floor_node = item.find('층')
-                    floor = floor_node.text.strip() if floor_node is not None and floor_node.text else "중"
-                    
-                    day_node = item.find('일')
-                    day = day_node.text.strip() if day_node is not None and day_node.text else "1"
-                    # 평수/타입 키 (예: 84.97㎡)
-                    area_str = f"{area}㎡" if 'area' in locals() and area > 0 else f"{pyeong}평"
-                    
-                    if area_str not in latest_by_type:
-                        latest_by_type[area_str] = {
+                        if budget > 0:
+                            upward_keywords = ["돌파", "이상", "넘으면", "상승", "오르면", "위로", "도달", "되면", "튀면"]
+                            if any(k in interest_type for k in upward_keywords):
+                                if price < budget: continue
+                            else:
+                                if price > budget: continue
+                                
+                        floor_node = item.find('층')
+                        floor = floor_node.text.strip() if floor_node is not None and floor_node.text else "중"
+                        
+                        day_node = item.find('일')
+                        day = day_node.text.strip() if day_node is not None and day_node.text else "1"
+                        area_str = f"{area}㎡" if 'area' in locals() and area > 0 else f"{pyeong}평"
+                        
+                        items.append({
+                            "area_str": area_str,
                             "id": f"RTMS_{lawd_cd}_{deal_ymd}{day}_{complex_name}_{area_str}",
                             "title": f"{complex_name} / {area_str} / {floor}층 / 20{deal_ymd[2:4]}.{deal_ymd[4:]}.{int(day):02d} / {price_str}",
-                            "url": "", # 링크 제거
+                            "url": "", 
                             "date": f"{deal_ymd[:4]}-{deal_ymd[4:]}-{int(day):02d}"
-                        }
+                        })
             except Exception as e:
-                print(f"[!] 실거래가 API 호출 실패: {e}")
+                pass
+            return items
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [executor.submit(fetch_month, m) for m in months]
+            for future in as_completed(futures):
+                res = future.result()
+                if res:
+                    for item in res:
+                        if item["area_str"] not in latest_by_type:
+                            latest_by_type[item["area_str"]] = item
+                        else:
+                            # 만약 이미 있으면 더 최근 날짜인지 비교해서 업데이트 (단순화를 위해 date 문자열 비교)
+                            if item["date"] > latest_by_type[item["area_str"]]["date"]:
+                                latest_by_type[item["area_str"]] = item
+                                
+        # area_str 키 삭제 후 반환
+        for k in latest_by_type:
+            del latest_by_type[k]["area_str"]
                 
         # 딕셔너리 값들을 리스트로 변환 (타입별 최신 거래 1건씩)
         notices = list(latest_by_type.values())
@@ -1718,53 +1728,56 @@ class PublicDataFetcher:
             pm = re.search(r'(\d+)평', interest_type)
             if pm: target_pyeong = int(pm.group(1))
             
-            for p in ptp_list:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
+            def process_ptp(p):
                 pyeong_nm = p.get('pyeongNm', '')
-                try:
-                    pyeong_val = int(re.sub(r'[^0-9]', '', pyeong_nm))
-                except:
-                    pyeong_val = 0
+                try: pyeong_val = int(re.sub(r'[^0-9]', '', pyeong_nm))
+                except: pyeong_val = 0
                 
-                # 타겟 평수가 명시되었으면 해당 평수만 (오차범위 5), 아니면 전부
                 if target_pyeong > 0 and abs(pyeong_val - target_pyeong) > 5:
-                    continue
+                    return None
                     
                 ptp_no = p.get('ptpNo')
                 current_year = datetime.datetime.now().year
                 
                 rtms_url = f"https://new.land.naver.com/api/complexes/{c_id}/prices/real?complexNo={c_id}&tradeType={trade_type}&year={current_year}&ptpNo={ptp_no}&priceChartChange=false"
-                res3 = requests.get(rtms_url, headers=headers, timeout=5)
-                if res3.status_code != 200: continue
-                r_data = res3.json()
-                real_prices = r_data.get('realPriceList', [])
-                
-                if not real_prices:
-                    # 이번 해에 없으면 작년 조회
-                    rtms_url = f"https://new.land.naver.com/api/complexes/{c_id}/prices/real?complexNo={c_id}&tradeType={trade_type}&year={current_year-1}&ptpNo={ptp_no}&priceChartChange=false"
-                    res3 = requests.get(rtms_url, headers=headers, timeout=5)
-                    if res3.status_code != 200: continue
+                try:
+                    res3 = requests.get(rtms_url, headers=headers, timeout=3)
+                    if res3.status_code != 200: return None
                     r_data = res3.json()
                     real_prices = r_data.get('realPriceList', [])
                     
-                if real_prices:
-                    latest = real_prices[0]
-                    trade_date = f"{latest.get('formattedTradeYear')}.{latest.get('tradeMonth')}.{latest.get('tradeDate')}"
-                    
-                    if trade_type == "B2": # 월세
-                        price = f"{latest.get('dealPrice')}/{latest.get('rentPrice')}"
-                    else: # 매매, 전세
-                        price = f"{latest.get('dealPrice')}만"
+                    if not real_prices:
+                        rtms_url = f"https://new.land.naver.com/api/complexes/{c_id}/prices/real?complexNo={c_id}&tradeType={trade_type}&year={current_year-1}&ptpNo={ptp_no}&priceChartChange=false"
+                        res3 = requests.get(rtms_url, headers=headers, timeout=3)
+                        if res3.status_code != 200: return None
+                        r_data = res3.json()
+                        real_prices = r_data.get('realPriceList', [])
                         
-                    floor = f"{latest.get('floor')}층" if latest.get('floor') else "중층"
-                    
-                    # 핀셋 포맷: 아파트명 / 타입(a,b,c 등) / 층수 / 날짜 / 거래가
-                    title = f"{c_name} / {pyeong_nm} / {floor} / {trade_date} / {price}"
-                    notices.append({
-                        "id": f"RTMS_{c_id}_{ptp_no}_{trade_date.replace('.','')}",
-                        "title": title,
-                        "url": "", # 실거래가는 링크 띄우지 말라고 함
-                        "date": trade_date
-                    })
+                    if real_prices:
+                        latest = real_prices[0]
+                        trade_date = f"{latest.get('formattedTradeYear')}.{latest.get('tradeMonth')}.{latest.get('tradeDate')}"
+                        
+                        if trade_type == "B2": price = f"{latest.get('dealPrice')}/{latest.get('rentPrice')}"
+                        else: price = f"{latest.get('dealPrice')}만"
+                            
+                        floor = f"{latest.get('floor')}층" if latest.get('floor') else "중층"
+                        title = f"{c_name} / {pyeong_nm} / {floor} / {trade_date} / {price}"
+                        return {
+                            "id": f"RTMS_{c_id}_{ptp_no}_{trade_date.replace('.','')}",
+                            "title": title,
+                            "url": "", 
+                            "date": trade_date
+                        }
+                except: pass
+                return None
+                
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = [executor.submit(process_ptp, p) for p in ptp_list]
+                for future in as_completed(futures):
+                    res = future.result()
+                    if res: notices.append(res)
                     
             return notices
         except Exception as e:
