@@ -549,7 +549,7 @@ def register_notification(
     
     budget_display = f"{budget}만 원" if budget > 0 else "예산 무관 (조건 없음)"
     
-    msg = f"[{user_id}] 님의 알림 등록이 완료되었습니다.\n\n타겟 지역: {region}\n관심 분야: {interest_type}\n예산 조건: {budget_display}\n지금부터 24시간 실시간 감시를 시작합니다.\n\n"
+    msg = f"[{user_id}] 님의 알림 등록이 완료되었습니다. (알림 번호: {alert_id})\n\n타겟 지역: {region}\n관심 분야: {interest_type}\n예산 조건: {budget_display}\n지금부터 24시간 실시간 감시를 시작합니다.\n\n"
     
     # 즉시 초기 1회 스캔 수행 (유저가 바로 결과를 보고 싶어하는 경우 대응)
     fetch_tasks = []
@@ -577,7 +577,7 @@ def register_notification(
         fetch_tasks.append((public_fetcher.fetch_real_transaction_prices, (region, interest_type, budget)))
         
     # 병렬로 가져오되 2.5초 내에 무조건 종료하여 카카오 5초 타임아웃 100% 방어
-    notices = fetch_all_parallel(fetch_tasks, global_timeout=15.0)
+    notices = fetch_all_parallel(fetch_tasks, global_timeout=60.0)
         
     from notification_db import is_notice_sent, mark_notice_sent
     
@@ -588,8 +588,11 @@ def register_notification(
     global USER_UI_CURSOR
     if 'USER_UI_CURSOR' not in globals():
         USER_UI_CURSOR = {}
+        
+    future_condition_keywords = ["돌파", "내려가면", "상승", "오르면", "도달", "튀면", "하락", "떨어지면", "넘으면", "위로", "진입", "내리꽂", "되면"]
+    is_future_condition = any(k in interest_type for k in future_condition_keywords)
             
-    if notices:
+    if notices and not is_future_condition:
         # 공공임대는 귀하므로 최대 10개까지, 민간 매물은 카톡 UI 방지를 위해 3개까지만 노출
         display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3
         
@@ -648,7 +651,7 @@ def list_my_notifications(
         
     msg = f"🔔 [{user_id}] 님의 실시간 매물 알림 리스트\n\n"
     for alert_id, region, budget, interest_type in alerts:
-        budget_str = f"{budget}만 원" if budget > 0 else "예산 무관 (조건 없음)"
+        budget_str = f"{budget}만 원" if int(budget) > 0 else "예산 무관 (조건 없음)"
         msg += f"- [알림 번호: {alert_id}] 지역: {region} | 분야: {interest_type} | 예산: {budget_str}\n"
     msg += "\n특정 알림을 수정하거나 삭제하시려면 해당 알림 번호를 말씀해 주세요! (예: '1번 알림 지워줘')"
     return json.dumps({
@@ -739,6 +742,11 @@ def modify_notification(
     new_budget: Annotated[int, Field(description="새로운 최대 예산. 변경하지 않으려면 0")] = 0,
     new_interest_type: Annotated[str, Field(description="새로운 관심 분야. 변경하지 않으려면 빈 문자열('')")] = ""
 ) -> str:
+    try:
+        alert_id = int(alert_id)
+    except:
+        return json.dumps({"status": "ERROR", "message": "잘못된 알림 번호입니다."})
+        
     if alert_id <= 0:
         return json.dumps({"status": "ERROR", "message": "수정할 알림 번호(alert_id)가 지정되지 않았습니다. 먼저 알림 목록을 조회해 주세요."})
         
@@ -747,7 +755,7 @@ def modify_notification(
         return json.dumps({"status": "ERROR", "message": f"입력하신 {alert_id}번 알림을 찾을 수 없습니다."}, ensure_ascii=False)
         
     region = new_region if new_region else current_alert[2]
-    budget = new_budget if new_budget > 0 else current_alert[3]
+    budget = new_budget if int(new_budget) > 0 else current_alert[3]
     interest_type = new_interest_type if new_interest_type else current_alert[4]
     
     update_user_alert(alert_id, region, budget, interest_type)
@@ -770,7 +778,7 @@ def modify_notification(
 )
 def get_more_listings(
     user_id: Annotated[str, Field(description="유저 고유 식별자(전화번호 또는 카톡/텔레그램 ID). 모를 경우 '고객'")] = "고객",
-    alert_id: Annotated[int, Field(description="더 볼 매물의 알림 번호. 모르면 ListMyNotifications 호출 요망")] = 0,
+    alert_id: Annotated[int, Field(description="더 볼 매물의 알림 번호. 방금 검색한 최신 매물을 이어서 보려면 반드시 0을 입력하세요!")] = 0,
     reset: Annotated[bool, Field(description="유저가 '기존 매물 다시 보여줘', '처음부터 다시 보여줘'라고 명시적으로 요청한 경우에만 true로 설정합니다.")] = False
 ) -> str:
     from notification_db import is_notice_sent, mark_notice_sent
@@ -814,7 +822,7 @@ def get_more_listings(
         fetch_tasks.append((public_fetcher.fetch_naver_rtms, (region, interest_type)))
         fetch_tasks.append((public_fetcher.fetch_real_transaction_prices, (region, interest_type, budget)))
         
-    notices = fetch_all_parallel(fetch_tasks, global_timeout=15.0)
+    notices = fetch_all_parallel(fetch_tasks, global_timeout=60.0)
         
     for n in notices:
         mark_notice_sent(user_id, n["id"])
