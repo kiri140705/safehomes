@@ -28,24 +28,34 @@ async def notification_worker():
                     
                 print(f"[🔍 스캐닝] 유저: {user_id} | 지역: {region} | 분야: {interest_type}")
                 
-                # 2. 관심 분야별 API 찌르기
+                is_rtms = "실거래" in interest_type
+                is_public_housing_only = any(k in interest_type.upper() for k in ["공공임대", "LH", "SH", "청년주택", "장기전세", "국민임대", "공실", "공고"])
+                
                 notices = []
-                if "공공임대" in interest_type or "LH" in interest_type:
-                    lh_data = public_fetcher.fetch_lh_lease_notices(interest_type, region)
-                    if lh_data:
-                        notices.extend(lh_data)
-                        
-                if "분양" in interest_type or "일반분양" in interest_type or "청약" in interest_type:
-                    gen_data = public_fetcher.fetch_general_sales_notices(region)
-                    if gen_data: notices.extend(gen_data)
-                        
-                if any(k in interest_type for k in ["SH", "공실", "청년주택", "장기전세", "국민임대", "서울", "전세임대"]):
-                    sh_data = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
-                    if sh_data: notices.extend(sh_data)
-                        
-                if "실거래" in interest_type:
-                    rtms_data = public_fetcher.fetch_real_transaction_prices(region, interest_type, budget)
-                    if rtms_data: notices.extend(rtms_data)
+                if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]) and not is_public_housing_only and not is_rtms:
+                    res = public_fetcher.fetch_naver_real_estate(region, budget, interest_type)
+                    if res: notices.extend(res)
+                    
+                is_sh_only = "SH" in interest_type.upper()
+                is_lh_only = "LH" in interest_type.upper()
+                
+                if any(k in interest_type.upper() for k in ["공공임대", "LH", "공실", "공고", "임대"]) and not is_sh_only:
+                    res = public_fetcher.fetch_lh_lease_notices(interest_type, region)
+                    if res: notices.extend(res)
+                    
+                if any(k in interest_type.upper() for k in ["공공임대", "SH", "공실", "청년주택", "장기전세", "국민임대", "전세임대", "공고", "임대"]) and not is_lh_only:
+                    res = public_fetcher.fetch_sh_vacancy_and_plans(region, interest_type)
+                    if res: notices.extend(res)
+                    
+                if "분양" in interest_type or "청약" in interest_type:
+                    res = public_fetcher.fetch_general_sales_notices(region)
+                    if res: notices.extend(res)
+                    
+                if is_rtms:
+                    res = public_fetcher.fetch_naver_rtms(region, interest_type)
+                    if res: notices.extend(res)
+                    res = public_fetcher.fetch_real_transaction_prices(region, interest_type, budget)
+                    if res: notices.extend(res)
                         
                 # 3. 새로운 공고인지 검사
                 for notice in notices:
