@@ -831,10 +831,19 @@ class PublicDataFetcher:
         import urllib.parse
         from bs4 import BeautifulSoup
         import requests
-        
         import re
         
-        import re
+        def parse_price_to_manwon(p_str):
+            p_str = p_str.split('/')[0].replace(' ', '')
+            val = 0
+            eok = re.search(r'(\d+)억', p_str)
+            if eok:
+                val += int(eok.group(1)) * 10000
+                p_str = p_str.replace(eok.group(0), '')
+            man = re.sub(r'[^0-9]', '', p_str)
+            if man:
+                val += int(man)
+            return val
         
         # 1. 쿼리 클렌징 (서술어 등 제거 - 전세/월세/매매, 평수, 가격 조건은 절대 날리지 않음!)
         clean_interest = re.sub(r'(찾아줘|알려줘|구해줘|수정해줘|보여줘|검색해줘|얼마야|뭐있어|어때|어때요|실거래가|실거래)\b', '', interest_type).strip()
@@ -875,6 +884,25 @@ class PublicDataFetcher:
                         area = parts[4]
                         price = parts[5]
                         
+                        if "전세" in interest_type and "전세" not in trade_type: continue
+                        if "월세" in interest_type and "월세" not in trade_type: continue
+                        if "매매" in interest_type and "매매" not in trade_type: continue
+                        
+                        if budget > 0:
+                            price_val = parse_price_to_manwon(price)
+                            if price_val > 0:
+                                min_val = 0
+                                min_match = re.search(r'(\d+)억\s*이상', interest_type)
+                                if min_match: min_val = int(min_match.group(1)) * 10000
+                                
+                                if min_val > 0 and price_val < min_val: continue
+                                
+                                upward_keywords = ["돌파", "넘으면", "상승", "오르면", "위로", "도달", "되면", "튀면"]
+                                if min_val == 0 and any(k in interest_type for k in upward_keywords):
+                                    if price_val < budget: continue
+                                else:
+                                    if price_val > budget: continue
+                        
                         title = f"[{region}] {name} - ({area}㎡) (호가(검색노출가): {trade_type} {price}만 원)"
                         notices.append({
                             "id": f"NAVER_PC_{region}_{len(notices)}",
@@ -882,7 +910,7 @@ class PublicDataFetcher:
                             "url": link,
                             "date": "네이버 실시간 검색"
                         })
-                        if len(notices) >= 3:
+                        if len(notices) >= 45:
                             break
         except Exception as e:
             print(f"[!] 네이버 PC 크롤링 에러: {e}")
@@ -925,6 +953,29 @@ class PublicDataFetcher:
                             details = parts[2] if len(parts) > 2 else ""
                             price = parts[-1] if len(parts) > 1 else ""
                             
+                            trade_type = ""
+                            if "전세" in price: trade_type = "전세"
+                            elif "월세" in price: trade_type = "월세"
+                            elif "매매" in price: trade_type = "매매"
+                            
+                            if not trade_type:
+                                if "전세" in text: trade_type = "전세"
+                                elif "월세" in text: trade_type = "월세"
+                                elif "매매" in text: trade_type = "매매"
+                            
+                            if "전세" in interest_type and "전세" not in trade_type: continue
+                            if "월세" in interest_type and "월세" not in trade_type: continue
+                            if "매매" in interest_type and "매매" not in trade_type: continue
+                            
+                            if budget > 0:
+                                price_val = parse_price_to_manwon(price)
+                                if price_val > 0:
+                                    upward_keywords = ["돌파", "이상", "넘으면", "상승", "오르면", "위로", "도달", "되면", "튀면"]
+                                    if any(k in interest_type for k in upward_keywords):
+                                        if price_val < budget: continue
+                                    else:
+                                        if price_val > budget: continue
+                            
                             year = "연식 미확인"
                             try:
                                 item_id_match = re.search(r'/items/(\d+)', href)
@@ -950,7 +1001,7 @@ class PublicDataFetcher:
                                 "date": "실시간 직방/다음 폴백"
                             })
                             daum_count += 1
-                            if daum_count >= 3:
+                            if daum_count >= 45:
                                 break
             except Exception as daum_e:
                 print(f"[!] 직방/다음 크롤링 실패: {daum_e}")
@@ -1732,7 +1783,9 @@ class PublicDataFetcher:
             
             def process_ptp(p):
                 pyeong_nm = p.get('pyeongNm', '')
-                try: pyeong_val = int(re.sub(r'[^0-9]', '', pyeong_nm))
+                try: 
+                    area_sqm = int(re.sub(r'[^0-9]', '', pyeong_nm))
+                    pyeong_val = int(area_sqm / 3.3058)
                 except: pyeong_val = 0
                 
                 if target_pyeong > 0 and abs(pyeong_val - target_pyeong) > 5:
