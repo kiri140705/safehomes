@@ -882,6 +882,12 @@ class PublicDataFetcher:
         import re
         
         def parse_price_to_manwon(p_str, trade_type=""):
+            if trade_type and trade_type in p_str and "시세" in p_str:
+                parts = p_str.split(f"{trade_type} 시세")
+                if len(parts) > 1:
+                    p_str = parts[1].split('만원')[0] + '만원'
+            p_str = p_str.split('~')[0]
+            
             if "월세" in trade_type and "/" in p_str:
                 p_str = p_str.split('/')[-1].replace(' ', '')
             else:
@@ -898,6 +904,7 @@ class PublicDataFetcher:
         
         # 1. 쿼리 클렌징 (서술어 등 제거 - 전세/월세/매매, 평수, 가격 조건은 절대 날리지 않음!)
         clean_interest = re.sub(r'(찾아줘|알려줘|구해줘|수정해줘|보여줘|검색해줘|얼마야|뭐있어|어때|어때요|실거래가|실거래)\b', '', interest_type).strip()
+        budget_interest = re.sub(r'\d+년식\s*이[상하]|\d+평(?:대)?\s*이[상하]|\d+층\s*이[상하]', '', interest_type)
         
         target_pyeong = 0
         pyeong_match = re.search(r'(\d+)평', interest_type)
@@ -1031,9 +1038,9 @@ class PublicDataFetcher:
                                     if min_val > 0 and price_val < min_val: continue
                                     
                                     upward_keywords = ["돌파", "넘으면", "상승", "오르면", "위로", "도달", "되면", "튀면"]
-                                    if "이하" in interest_type:
+                                    if "이하" in budget_interest:
                                         if price_val > budget: continue
-                                    elif "이상" in interest_type or (min_val == 0 and any(k in interest_type for k in upward_keywords)):
+                                    elif "이상" in budget_interest or (min_val == 0 and any(k in budget_interest for k in upward_keywords)):
                                         if price_val < budget: continue
                                     else:
                                         lower_bound = budget * 0.8
@@ -1158,9 +1165,9 @@ class PublicDataFetcher:
                                             if min_val > 0 and price_val < min_val: continue
                                         
                                             upward_keywords = ["돌파", "넘으면", "상승", "오르면", "위로", "도달", "되면", "튀면"]
-                                            if "이하" in interest_type:
+                                            if "이하" in budget_interest:
                                                 if price_val > budget: continue
-                                            elif "이상" in interest_type or (min_val == 0 and any(k in interest_type for k in upward_keywords)):
+                                            elif "이상" in budget_interest or (min_val == 0 and any(k in budget_interest for k in upward_keywords)):
                                                 if price_val < budget: continue
                                             else:
                                                 lower_bound = budget * 0.8
@@ -1568,7 +1575,7 @@ class PublicDataFetcher:
                     params_stores["indsLclsCd"] = inds_cd
                 
                 params_stores["numOfRows"] = 1000
-                res_stores = requests.get(url_stores, params=params_stores, timeout=8)
+                res_stores = requests.get(url_stores, params=params_stores, timeout=60)
                 stores_data = res_stores.json()
                 
                 meat_keywords = ["소고기", "고기", "고깃", "삼겹", "한우", "곱창", "막창", "대패", "냉삼", "갈매기", "갈비", "육류"]
@@ -1626,21 +1633,21 @@ class PublicDataFetcher:
             is_light_food = any(k in business_type for k in ["카페", "커피", "디저트", "분식", "김밥"])
 
             if is_heavy_food:
-                if competitors == 0: competitors = 25
+                if competitors == 0: competitors = -1
                 if avg_sales_value == 0: avg_sales_value = 6000  # 월매출 6,000만원 베이스
                 closure_rate_val = 32
                 target_demographic = "3040 직장인 남성 및 단체 회식 (상권 내 결제 비중 75%)"
                 trend = "전형적인 저녁/심야 특화 상권 (회식 수요 집중)"
                 peak_time = "금요일, 토요일 오후 18:00 ~ 23:00"
             elif is_light_food:
-                if competitors == 0: competitors = 40
+                if competitors == 0: competitors = -1
                 if avg_sales_value == 0: avg_sales_value = 1800
                 closure_rate_val = 28
                 target_demographic = "2030 여성 (상권 내 결제 비중 65%)"
                 trend = "다이내믹 상권 (최근 1년간 20대 유입 15% 증가)"
                 peak_time = "주말 오후 13:00 ~ 17:00"
             else:
-                if competitors == 0: competitors = 18 if business_type in ["음식점", "식당", "술집"] else 4
+                if competitors == 0: competitors = -1
                 if avg_sales_value == 0: avg_sales_value = 3000 if business_type in ["음식점", "식당", "술집"] else 1500
                 closure_rate_val = 28 if competitors > 10 else 12
                 target_demographic = "해당 상권 주 소비층 (데이터 혼재)"
@@ -1657,13 +1664,13 @@ class PublicDataFetcher:
                 region_multiplier = 1.4
                 region_name = "홍대/합정"
                 target_demographic = "20대 남녀 (대학생/데이트 소비 압도적 비율)"
-                if competitors < 50: competitors = 65 # API 오류 방지 강제 보정
+
             elif any(k in address for k in ["여의도", "종로", "광화문", "을지로"]):
                 region_multiplier = 1.6
                 region_name = "도심 오피스"
                 target_demographic = "3050 직장인 (평일 점심/저녁 회식 압도적)"
                 peak_time = "평일 점심 11:30~13:00 및 목/금 저녁"
-                if competitors < 30: competitors = 80
+
             elif any(k in address for k in ["목동", "오목교", "노원", "중계"]):
                 region_multiplier = 1.2
                 region_name = "주거/학원가"
@@ -1891,9 +1898,11 @@ class PublicDataFetcher:
         apt_name = ""
         pyeong_target = 0
         
-        words = interest_type.split()
+        words = (region + " " + interest_type).split()
         for w in words:
-            if w not in ["아파트", "실거래가", "알려줘", "돌파하면", "알림줘", "이하", "이상", "찾아줘", "매매", "전세", "월세"] and "평" not in w and "억" not in w and "만" not in w:
+            if w.endswith("구") or w.endswith("동") or w.endswith("시") or w.endswith("군"):
+                continue
+            if w not in ["아파트", "실거래가", "알려줘", "돌파하면", "알림줘", "이하", "이상", "찾아줘", "매매", "전세", "월세", "상가", "오피스텔", "빌라", "원룸", "투룸"] and "평" not in w and "억" not in w and "만" not in w:
                 apt_name = w
                 break
                 

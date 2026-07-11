@@ -439,6 +439,8 @@ def analyze_real_estate_safety(
                         actual_business_type = k
                         break
         commercial_data = public_fetcher.analyze_commercial_area(address, actual_business_type, monthly_rent)
+        comp_str = f"- 반경 500m 내 경쟁점포: {commercial_data['competitors_count']}개\n" if commercial_data['competitors_count'] != -1 else ""
+        
         full_markdown_report += (
             f"📈 **[World-Class 상권 분석 리포트]**\n"
             f"- 상권 종합 등급: {commercial_data['grade']}\n"
@@ -446,7 +448,7 @@ def analyze_real_estate_safety(
             f"- 평균 유동인구: {commercial_data['floating_population']}\n"
             f"- 최대 매출 시간대: {commercial_data['peak_time']}\n"
             f"- 타겟 유동인구: {commercial_data['target_demographic']}\n"
-            f"- 반경 500m 내 경쟁점포: {commercial_data['competitors_count']}개\n"
+            f"{comp_str}"
             f"- 동종업계 추정 폐업률: {commercial_data['closure_rate']}\n"
             f"- 동종업계 월평균 매출: {commercial_data['avg_monthly_sales']}\n\n"
             f"📊 **[AI 손익분기점(BEP) 컨설팅]**\n{commercial_data['bep_analysis']}\n\n"
@@ -542,7 +544,7 @@ def register_notification(
     user_id: Annotated[str, Field(description="알림을 받을 유저의 고유 식별자(전화번호 또는 카톡/텔레그램 ID). 모를 경우 '고객'")] = "고객",
     region: Annotated[str, Field(description="알림을 원하는 타겟 지역 (예: '마포구', '합정동', '전국')")] = "전국",
     budget: Annotated[int, Field(description="최대 예산 또는 월세 조건 (단위: 만원)")] = 0,
-    interest_type: Annotated[str, Field(description="사용자가 입력한 매물 조건 전체 원문 그대로 기재 (예: '20평대 아파트 전세', '영등포아트자이 실거래가', '상가 월세' 등. 절대 임의로 요약하거나 '실거래가' 단어 하나만 기재하지 말 것.)")] = "공공임대"
+    interest_type: Annotated[str, Field(description="사용자가 입력한 매물 조건 전체 원문 그대로 기재 (예: '20평 이상 아파트 전세 5억 이하', '영등포아트자이 실거래가', '상가 월세 900만원 이상' 등. 절대 임의로 요약하거나 '이상/이하' 같은 예산 제약 조건을 누락하지 마세요!!!)")] = "공공임대"
 ) -> str:
     # DB에 저장
     alert_id = register_user_alert(user_id, region, budget, interest_type)
@@ -871,9 +873,7 @@ def get_more_listings(
         
     notices = fetch_all_parallel(fetch_tasks, global_timeout=60.0)
         
-    for n in notices:
-        mark_notice_sent(user_id, n["id"])
-        
+
         
     if not notices:
         if is_public_housing_only:
