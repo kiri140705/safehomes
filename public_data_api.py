@@ -874,7 +874,7 @@ class PublicDataFetcher:
             print(f"[!] LH API 파싱 실패: {e}")
             return []
 
-    def fetch_naver_real_estate(self, region: str, budget: int, interest_type: str = ""):
+    def fetch_naver_real_estate(self, region: str, budget: int, interest_type: str = "", offset: int = 0):
         """네이버 부동산 실시간 크롤링 (빠른 버전 + 핀셋 필터링)"""
         import urllib.parse
         from bs4 import BeautifulSoup
@@ -912,18 +912,52 @@ class PublicDataFetcher:
         elif "월세" in clean_interest: target_trade = "월세"
         elif "매매" in clean_interest: target_trade = "매매"
         
+        dong_match = re.search(r'([가-힣]+[동읍면])\b', clean_interest)
+        dong = dong_match.group(1) if dong_match else ""
+        
+        try:
+            from region_map import REGION_MAP
+        except ImportError:
+            REGION_MAP = {}
+            
+        dongs_to_search = []
+        if dong:
+            dongs_to_search = [dong]
+        else:
+            # region 이 "서울" 같은 시/도 이거나 "양천구" 같은 구/시/군 일 경우 매핑
+            found = []
+            for sido, sgg_dict in REGION_MAP.items():
+                # "서울" in "서울특별시" 
+                if region in sido or sido in region:
+                    for sgg, d_list in sgg_dict.items():
+                        found.extend([f"{sgg} {d}" for d in d_list])
+                    break
+                elif region in sgg_dict:
+                    found.extend(sgg_dict[region])
+                    break
+                    
+            if found:
+                page = offset // 3
+                # 3개의 동을 묶어서 한 페이지로 처리 (한 번에 3개의 동을 검색)
+                idx = (page * 3) % len(found)
+                dongs_to_search = found[idx : idx + 3]
+            else:
+                dongs_to_search = [""]
+        
         queries_to_try = []
         original_query = clean_interest if region in clean_interest else f"{region} {clean_interest}"
         queries_to_try.append(original_query)
         
         if region and target_trade:
-            if property_type:
-                queries_to_try.append(f"{region} {property_type} {target_trade}")
-                if target_pyeong > 0:
-                    # 네이버 위젯을 강력하게 찌르기 위해 평수 명시 쿼리 추가
-                    queries_to_try.append(f"{region} {target_pyeong}평 {property_type} {target_trade}")
-                    queries_to_try.append(f"{region} {target_pyeong}평대 {property_type} {target_trade}")
-            queries_to_try.append(f"{region} {target_trade} 매물")
+            for d in dongs_to_search:
+                region_query = f"{region} {d}".strip() if not d.startswith(region) else d
+                
+                if property_type:
+                    queries_to_try.append(f"{region_query} {property_type} {target_trade}")
+                    if target_pyeong > 0:
+                        queries_to_try.append(f"{region_query} {target_pyeong}평 {property_type} {target_trade}")
+                        queries_to_try.append(f"{region_query} {target_pyeong}평대 {property_type} {target_trade}")
+                queries_to_try.append(f"{region_query} {target_trade} 매물")
             
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/115.0",
@@ -950,16 +984,16 @@ class PublicDataFetcher:
                         parts = text.split('|')
                         if len(parts) >= 6:
                             a_tag = row.find('a')
-                            link = a_tag['href'] if a_tag else url
-                            if link.startswith('/'): link = "https://search.naver.com" + link
-                            
-                            if link in seen_links: continue
-                            seen_links.add(link)
-                            
                             trade_type = parts[0]
                             name = parts[2]
                             area = parts[4]
                             price = parts[5]
+                            
+                            link = a_tag['href'] if a_tag else f"{url}#{name}_{area}_{price}"
+                            if link.startswith('/'): link = "https://search.naver.com" + link
+                            
+                            if link in seen_links: continue
+                            seen_links.add(link)
                             
                             # 평수 필터링 추가
                             if target_pyeong > 0:
@@ -984,8 +1018,8 @@ class PublicDataFetcher:
                             if "월세" in interest_type and "월세" not in trade_type: continue
                             if "매매" in interest_type and "매매" not in trade_type: continue
                             
+                            price_val = parse_price_to_manwon(price)
                             if budget > 0:
-                                price_val = parse_price_to_manwon(price)
                                 if price_val > 0:
                                     min_val = 0
                                     min_match = re.search(r'(\d+)억\s*이상', interest_type)
@@ -1000,11 +1034,29 @@ class PublicDataFetcher:
                                         if price_val > budget: continue
                             
                             title = f"[{region}] {name} - ({area}㎡) (호가(검색노출가): {trade_type} {price}만 원)"
+                            norm_name = re.sub(r'(아파트|빌라|오피스텔|\d+동|연식 미확인|\([^)]*\)|\s)', '', name)
+                            
+                            is_dup = False
+                            for n in notices:
+                                if n["price_val"] == price_val:
+                                    n_norm = n.get("norm_name", "")
+                                    if norm_name and n_norm and (norm_name in n_norm or n_norm in norm_name):
+                                        is_dup = True
+                                        break
+                                elif n["title"] == title:
+                                    is_dup = True
+                                    break
+                            
+                            if is_dup:
+                                continue
+                                
                             notices.append({
                                 "id": f"NAVER_PC_{region}_{len(notices)}",
                                 "title": title,
                                 "url": link,
-                                "date": "네이버 실시간 검색"
+                                "date": "네이버 실시간 검색",
+                                "price_val": price_val,
+                                "norm_name": norm_name
                             })
                             if len(notices) >= 45:
                                 break
@@ -1017,108 +1069,113 @@ class PublicDataFetcher:
                 from bs4 import BeautifulSoup
                 import re, requests
                 
-                # 다음 검색어는 너무 구체적이면 매물이 안 나오므로 키워드만 추출
-                basic_query = f"{region}"
-                if "빌라" in interest_type: basic_query += " 빌라"
-                elif "아파트" in interest_type: basic_query += " 아파트"
-                elif "오피스텔" in interest_type: basic_query += " 오피스텔"
-                elif "원룸" in interest_type: basic_query += " 원룸"
+                daum_queries = []
+                targets = dongs_to_search if dongs_to_search else [region]
+                for d in targets:
+                    basic_query = f"{region} {d}".strip() if d != region and not d.startswith(region) else d
+                    if "빌라" in interest_type: basic_query += " 빌라"
+                    elif "아파트" in interest_type: basic_query += " 아파트"
+                    elif "오피스텔" in interest_type: basic_query += " 오피스텔"
+                    elif "원룸" in interest_type: basic_query += " 원룸"
+                    elif "상가" in interest_type: basic_query += " 상가"
+                    
+                    if "매매" in interest_type: basic_query += " 매매"
+                    elif "전세" in interest_type: basic_query += " 전세"
+                    elif "월세" in interest_type: basic_query += " 월세"
+                    
+                    pyeong_match = re.search(r'(\d+)평', interest_type)
+                    if pyeong_match: basic_query += f" {pyeong_match.group(1)}평"
+                    daum_queries.append(basic_query)
                 
-                if "매매" in interest_type: basic_query += " 매매"
-                elif "전세" in interest_type: basic_query += " 전세"
-                elif "월세" in interest_type: basic_query += " 월세"
-                
-                pyeong_match = re.search(r'(\d+)평', interest_type)
-                if pyeong_match: basic_query += f" {pyeong_match.group(1)}평"
-                
-                q = urllib.parse.quote(basic_query)
                 headers = {"User-Agent": "Mozilla/5.0"}
-                
                 daum_count = 0
                 seen_hrefs = set()
-                for page in range(1, 6):
+                for b_query in daum_queries:
                     if daum_count >= 45: break
-                    r_daum = requests.get(f"https://m.search.daum.net/search?w=tot&q={q}&p={page}", headers=headers, timeout=5)
-                    soup_daum = BeautifulSoup(r_daum.text, 'html.parser')
-                    
-                    for a in soup_daum.find_all('a', href=True):
-                        href = a['href']
-                        if ('m.zigbang.com/home' in href or 'realty.daum.net' in href) and href not in seen_hrefs:
-                            seen_hrefs.add(href)
-                            text = a.text.strip()
-                            if "매매" in text or "전세" in text or "월세" in text:
-                                parts = [p.strip() for p in text.split("  ") if p.strip()]
-                                name = parts[0] if len(parts) > 0 else "매물"
-                                details = parts[2] if len(parts) > 2 else ""
-                                price = parts[-1] if len(parts) > 1 else ""
+                    q = urllib.parse.quote(b_query)
+                    for page in range(1, 6):
+                        if daum_count >= 45: break
+                        r_daum = requests.get(f"https://m.search.daum.net/search?w=tot&q={q}&p={page}", headers=headers, timeout=5)
+                        soup_daum = BeautifulSoup(r_daum.text, 'html.parser')
+                        
+                        for a in soup_daum.find_all('a', href=True):
+                            href = a['href']
+                            if ('m.zigbang.com/home' in href or 'realty.daum.net' in href) and href not in seen_hrefs:
+                                seen_hrefs.add(href)
+                                text = a.text.strip()
+                                if "매매" in text or "전세" in text or "월세" in text:
+                                    parts = [p.strip() for p in text.split("  ") if p.strip()]
+                                    name = parts[0] if len(parts) > 0 else "매물"
+                                    details = parts[2] if len(parts) > 2 else ""
+                                    price = parts[-1] if len(parts) > 1 else ""
                                 
-                                trade_type = ""
-                                if "전세" in price: trade_type = "전세"
-                                elif "월세" in price: trade_type = "월세"
-                                elif "매매" in price: trade_type = "매매"
+                                    trade_type = ""
+                                    if "전세" in price: trade_type = "전세"
+                                    elif "월세" in price: trade_type = "월세"
+                                    elif "매매" in price: trade_type = "매매"
                                 
-                                if not trade_type:
-                                    if "전세" in text: trade_type = "전세"
-                                    elif "월세" in text: trade_type = "월세"
-                                    elif "매매" in text: trade_type = "매매"
+                                    if not trade_type:
+                                        if "전세" in text: trade_type = "전세"
+                                        elif "월세" in text: trade_type = "월세"
+                                        elif "매매" in text: trade_type = "매매"
                                 
-                                # 평수 필터링 추가
-                                if target_pyeong > 0:
-                                    area_val = 0
-                                    area_nums = re.findall(r'\d+', details.split(',')[0].split('/')[0] if ',' in details else details)
-                                    if area_nums:
-                                        area_val = int(area_nums[-1])
-                                    if area_val > 0:
-                                        pyeong = int(area_val / 3.3058)
-                                        # 평수 필터링 (이상/이하/평대 지원)
-                                        if "평대" in interest_type:
-                                            if not (target_pyeong <= pyeong < target_pyeong + 10): continue
-                                        else:
-                                            clean_interest_no_space = interest_type.replace(" ", "")
-                                            if f"{target_pyeong}평이상" in clean_interest_no_space:
-                                                if pyeong < target_pyeong: continue
-                                            elif f"{target_pyeong}평이하" in clean_interest_no_space:
-                                                if pyeong > target_pyeong: continue
+                                    # 평수 필터링 추가
+                                    if target_pyeong > 0:
+                                        area_val = 0
+                                        area_nums = re.findall(r'\d+', details.split(',')[0].split('/')[0] if ',' in details else details)
+                                        if area_nums:
+                                            area_val = int(area_nums[-1])
+                                        if area_val > 0:
+                                            pyeong = int(area_val / 3.3058)
+                                            # 평수 필터링 (이상/이하/평대 지원)
+                                            if "평대" in interest_type:
+                                                if not (target_pyeong <= pyeong < target_pyeong + 10): continue
                                             else:
-                                                if not (target_pyeong - 5 <= pyeong <= target_pyeong + 5): continue
-                                # (엄격한 property_type 문자열 검사 삭제)
-                                if "전세" in interest_type and "전세" not in trade_type: continue
-                                if "월세" in interest_type and "월세" not in trade_type: continue
-                                if "매매" in interest_type and "매매" not in trade_type: continue
+                                                clean_interest_no_space = interest_type.replace(" ", "")
+                                                if f"{target_pyeong}평이상" in clean_interest_no_space:
+                                                    if pyeong < target_pyeong: continue
+                                                elif f"{target_pyeong}평이하" in clean_interest_no_space:
+                                                    if pyeong > target_pyeong: continue
+                                                else:
+                                                    if not (target_pyeong - 5 <= pyeong <= target_pyeong + 5): continue
+                                    # (엄격한 property_type 문자열 검사 삭제)
+                                    if "전세" in interest_type and "전세" not in trade_type: continue
+                                    if "월세" in interest_type and "월세" not in trade_type: continue
+                                    if "매매" in interest_type and "매매" not in trade_type: continue
                                 
-                                if budget > 0:
                                     price_val = parse_price_to_manwon(price)
-                                    if price_val > 0:
-                                        min_val = 0
-                                        min_match = re.search(r'(\d+)억\s*이상', interest_type)
-                                        if min_match: min_val = int(min_match.group(1)) * 10000
+                                    if budget > 0:
+                                        if price_val > 0:
+                                            min_val = 0
+                                            min_match = re.search(r'(\d+)억\s*이상', interest_type)
+                                            if min_match: min_val = int(min_match.group(1)) * 10000
                                         
-                                        if min_val > 0 and price_val < min_val: continue
+                                            if min_val > 0 and price_val < min_val: continue
                                         
-                                        upward_keywords = ["돌파", "넘으면", "상승", "오르면", "위로", "도달", "되면", "튀면"]
-                                        if min_val == 0 and any(k in interest_type for k in upward_keywords):
-                                            if price_val < budget: continue
-                                        else:
-                                            if price_val > budget: continue
+                                            upward_keywords = ["돌파", "넘으면", "상승", "오르면", "위로", "도달", "되면", "튀면"]
+                                            if min_val == 0 and any(k in interest_type for k in upward_keywords):
+                                                if price_val < budget: continue
+                                            else:
+                                                if price_val > budget: continue
                                 
-                                year = "연식 미확인"
-                                try:
-                                    item_id_match = re.search(r'/items/(\d+)', href)
-                                    if item_id_match:
-                                        z_item_id = item_id_match.group(1)
-                                        z_res = requests.get(f"https://apis.zigbang.com/v3/items/{z_item_id}", headers=headers, timeout=2)
-                                        if z_res.status_code == 200:
-                                            z_data = z_res.json()
-                                            approve_date = str(z_data.get("item", {}).get("approveDate", ""))
-                                            if len(approve_date) >= 4:
-                                                year = f"{approve_date[:4]}년식"
-                                except: pass
+                                    year = "연식 미확인"
+                                    try:
+                                        item_id_match = re.search(r'/items/(\d+)', href)
+                                        if item_id_match:
+                                            z_item_id = item_id_match.group(1)
+                                            z_res = requests.get(f"https://apis.zigbang.com/v3/items/{z_item_id}", headers=headers, timeout=2)
+                                            if z_res.status_code == 200:
+                                                z_data = z_res.json()
+                                                approve_date = str(z_data.get("item", {}).get("approveDate", ""))
+                                                if len(approve_date) >= 4:
+                                                    year = f"{approve_date[:4]}년식"
+                                    except: pass
                                 
-                                # 빌라/원룸 연식 필터링
-                                if year != "연식 미확인":
-                                    z_year_match = re.search(r'(\d{4})년식', interest_type)
-                                    if z_year_match:
-                                        z_target_year = int(z_year_match.group(1))
+                                    # 빌라/원룸 연식 필터링
+                                    if year != "연식 미확인":
+                                        z_year_match = re.search(r'(\d{4})년식', interest_type)
+                                        if z_year_match:
+                                            z_target_year = int(z_year_match.group(1))
                                         z_actual_year = int(year[:4])
                                         if "이하" in interest_type or "이전" in interest_type:
                                             if z_actual_year > z_target_year: continue
@@ -1128,11 +1185,29 @@ class PublicDataFetcher:
                                 # 연식을 강제로 붙여서 거짓말하는 로직 제거 (실제 확인된 연식만 출력)
                                 title_year_str = f"({year}) " if year != "연식 미확인" else ""
                                 title = f"[{region}] {name} - {title_year_str}{details} (호가(검색노출가): {price})"
+                                norm_name = re.sub(r'(아파트|빌라|오피스텔|\d+동|연식 미확인|\([^)]*\)|\s)', '', name)
+                                
+                                is_dup = False
+                                for n in notices:
+                                    if n["price_val"] == price_val:
+                                        n_norm = n.get("norm_name", "")
+                                        if norm_name and n_norm and (norm_name in n_norm or n_norm in norm_name):
+                                            is_dup = True
+                                            break
+                                    elif n["title"] == title:
+                                        is_dup = True
+                                        break
+                                
+                                if is_dup:
+                                    continue
+                                    
                                 notices.append({
                                     "id": f"DAUM_REAL_{region}_{daum_count}",
                                     "title": title,
                                     "url": href,
-                                    "date": "실시간 직방/다음 폴백"
+                                    "date": "실시간 직방/다음 폴백",
+                                    "price_val": price_val,
+                                    "norm_name": norm_name
                                 })
                                 daum_count += 1
                                 if daum_count >= 45:
@@ -1216,6 +1291,14 @@ class PublicDataFetcher:
                 filtered_notices.append(n)
                 
             notices = filtered_notices
+            
+        # 네이버 부동산 1순위, 직방 2순위 정렬 후 가격순
+        def sort_priority(x):
+            price = x.get("price_val", 999999999)
+            priority = 0 if "네이버" in x.get("date", "") else 1
+            return (priority, price)
+            
+        notices.sort(key=sort_priority)
 
         return notices
 
@@ -1479,7 +1562,7 @@ class PublicDataFetcher:
                 res_stores = requests.get(url_stores, params=params_stores, timeout=3)
                 stores_data = res_stores.json()
                 
-                meat_keywords = ["소고기", "고기", "고깃", "삼겹", "소", "곱창", "막창", "대패", "냉삼", "갈매기", "갈비"]
+                meat_keywords = ["소고기", "고기", "고깃", "삼겹", "한우", "곱창", "막창", "대패", "냉삼", "갈매기", "갈비", "육류"]
                 cafe_keywords = ["카페", "커피", "디저트"]
                 is_meat = any(k in business_type for k in meat_keywords)
                 is_cafe = any(k in business_type for k in cafe_keywords)
@@ -1823,7 +1906,7 @@ class PublicDataFetcher:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
         def fetch_month(deal_ymd):
-            params = {"serviceKey": self.portal_api_key, "LAWD_CD": lawd_cd, "DEAL_YMD": deal_ymd}
+            params = {"serviceKey": self.portal_api_key, "LAWD_CD": lawd_cd, "DEAL_YMD": deal_ymd, "numOfRows": 1000}
             items = []
             try:
                 res = requests.get(url, params=params, timeout=5)

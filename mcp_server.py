@@ -547,9 +547,17 @@ def register_notification(
     # DB에 저장
     alert_id = register_user_alert(user_id, region, budget, interest_type)
     
+    # 쌩 DB ID 대신 1부터 시작하는 순차적 번호로 변환하여 유저에게 노출
+    alerts = get_user_alerts(user_id)
+    seq_id = 1
+    for idx, (a_id, _, _, _) in enumerate(alerts, 1):
+        if a_id == alert_id:
+            seq_id = idx
+            break
+    
     budget_display = f"{budget}만 원" if budget > 0 else "예산 무관 (조건 없음)"
     
-    msg = f"[{user_id}] 님의 알림 등록이 완료되었습니다. (알림 번호: {alert_id})\n\n타겟 지역: {region}\n관심 분야: {interest_type}\n예산 조건: {budget_display}\n지금부터 24시간 실시간 감시를 시작합니다.\n\n"
+    msg = f"[{user_id}] 님의 알림 등록이 완료되었습니다. (알림 번호: {seq_id})\n\n타겟 지역: {region}\n관심 분야: {interest_type}\n예산 조건: {budget_display}\n지금부터 24시간 실시간 감시를 시작합니다.\n\n"
     
     # 즉시 초기 1회 스캔 수행 (유저가 바로 결과를 보고 싶어하는 경우 대응)
     fetch_tasks = []
@@ -581,9 +589,8 @@ def register_notification(
         
     from notification_db import is_notice_sent, mark_notice_sent
     
-    # 모든 크롤링된 매물을 DB에 저장하여 스케줄러가 중복 발송하지 않게 차단
-    for n in notices:
-        mark_notice_sent(user_id, n["id"])
+    # RegisterNotification 에서는 모든 매물을 한 번에 sent 처리하지 않음
+    # 대신 밑에서 화면에 보여준 3개만 sent 처리하여 get_more_listings 에서 나머지를 볼 수 있게 함
         
     global USER_UI_CURSOR
     if 'USER_UI_CURSOR' not in globals():
@@ -608,6 +615,10 @@ def register_notification(
             else:
                 msg += f"- {n['title']}\n"
         
+        # 처음 검색 시에도 보여준 매물은 sent 처리
+        for n in next_items:
+            mark_notice_sent(user_id, n["id"])
+            
         if len(notices) > display_limit:
             msg += "💡 (아직 보여드리지 않은 매물이 더 있습니다. 다른 매물을 원하시면 '다른 매물 보여줘'라고 입력하세요!)\n\n"
         else:
@@ -650,9 +661,9 @@ def list_my_notifications(
         }, ensure_ascii=False)
         
     msg = f"🔔 [{user_id}] 님의 실시간 매물 알림 리스트\n\n"
-    for alert_id, region, budget, interest_type in alerts:
+    for idx, (alert_id, region, budget, interest_type) in enumerate(alerts, 1):
         budget_str = f"{budget}만 원" if int(budget) > 0 else "예산 무관 (조건 없음)"
-        msg += f"- [알림 번호: {alert_id}] 지역: {region} | 분야: {interest_type} | 예산: {budget_str}\n"
+        msg += f"- [알림 번호: {idx}] 지역: {region} | 분야: {interest_type} | 예산: {budget_str}\n"
     msg += "\n특정 알림을 수정하거나 삭제하시려면 해당 알림 번호를 말씀해 주세요! (예: '1번 알림 지워줘')"
     return json.dumps({
         "status": "SUCCESS", 
@@ -680,8 +691,34 @@ def cancel_notification(
         delete_all_alerts(user_id)
         msg = f"[{user_id}] 님의 모든 부동산 스나이퍼 알림 구독이 영구적으로 해지(전체 삭제)되었습니다. 축하드립니다! 좋은 매물을 구하셨기를 바랍니다."
     elif int(alert_id) > 0:
-        delete_user_alert(int(alert_id))
-        msg = f"[{user_id}] 님의 {alert_id}번 알림이 정상적으로 삭제(해지)되었습니다."
+        alerts = get_user_alerts(user_id)
+        real_alert_id = -1
+        
+        # 1. 유저가 전달한 번호가 순차 인덱스인 경우 처리
+        if 1 <= int(alert_id) <= len(alerts):
+            real_alert_id = alerts[int(alert_id) - 1][0]
+        else:
+            # 2. 유저가 진짜 DB ID를 직접 전달했을 경우 대비한 폴백
+            for a in alerts:
+                if a[0] == int(alert_id):
+                    real_alert_id = int(alert_id)
+                    break
+                    
+        if real_alert_id != -1:
+            delete_user_alert(real_alert_id)
+            msg = f"[{user_id}] 님의 {alert_id}번 알림이 정상적으로 삭제(해지)되었습니다.\n\n"
+            
+            # 남은 알림 리스트 재정렬하여 노출
+            remaining_alerts = get_user_alerts(user_id)
+            if not remaining_alerts:
+                msg += "현재 등록된 알림이 없습니다."
+            else:
+                msg += f"🔔 [{user_id}] 님의 남은 실시간 알림 리스트\n\n"
+                for idx, (a_id, r, b, i_type) in enumerate(remaining_alerts, 1):
+                    budget_str = f"{b}만 원" if int(b) > 0 else "예산 무관 (조건 없음)"
+                    msg += f"- [알림 번호: {idx}] 지역: {r} | 분야: {i_type} | 예산: {budget_str}\n"
+        else:
+            msg = f"{alert_id}번 알림을 찾을 수 없습니다. 내 알림 목록을 다시 조회해 주세요."
     else:
         msg = "몇 번 알림을 삭제하시겠습니까? 알림 번호를 정확히 숫자로 입력해주세요. (예: 3번 알림 삭제해줘)"
         
@@ -847,20 +884,30 @@ def get_more_listings(
         
     display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3
     
-    if reset:
-        USER_UI_CURSOR[str(alert_id)] = 0
-        
-    offset = USER_UI_CURSOR.get(str(alert_id), 0)
+    from notification_db import is_notice_sent, mark_notice_sent
     
-    if offset >= len(notices):
+    # 중복 제거 (이미 본 매물 필터링)
+    filtered_notices = []
+    if reset:
+        filtered_notices = notices
+        USER_UI_CURSOR[str(alert_id)] = 0
+    else:
+        for n in notices:
+            if not is_notice_sent(user_id, n["id"]):
+                filtered_notices.append(n)
+                
+    if not filtered_notices and notices:
         return json.dumps({
             "status": "SUCCESS",
-            "message": f"현재 위 조건에 부합하는 매물이 총 {len(notices)}개뿐이라 이미 처음부터 끝까지 모두 보여드렸습니다!\n\n24시간 스케줄러가 감시 중이니 신규 매물이 뜨면 카톡으로 즉시 알려드릴게요.\n(기존 매물을 다시 보시려면 '기존 매물 다시 보여줘'라고 입력해주세요.)",
+            "message": f"현재 위 조건에 부합하는 매물을 모두 보여드렸습니다! (총 {len(notices)}개)\n\n24시간 스케줄러가 감시 중이니 신규 매물이 뜨면 카톡으로 즉시 알려드릴게요.\n(기존 매물을 다시 보시려면 '기존 매물 다시 보여줘'라고 입력해주세요.)",
             "system_instruction_for_llm": PARROT_INSTRUCTION
         }, ensure_ascii=False)
-
-    next_items = notices[offset : offset + display_limit]
-    USER_UI_CURSOR[str(alert_id)] = offset + display_limit
+        
+    next_items = filtered_notices[:display_limit]
+    
+    # 새로 보여줄 매물만 sent 처리
+    for n in next_items:
+        mark_notice_sent(user_id, n["id"])
 
     msg = ""
     if reset:
@@ -873,7 +920,7 @@ def get_more_listings(
         else:
             msg += f"- {n['title']}\n"
         
-    if offset + display_limit >= len(notices):
+    if len(filtered_notices) <= display_limit:
         msg += "💡 (검색된 매물을 모두 보여드렸습니다! 더 이상 숨겨진 매물이 없습니다. 24시간 스케줄러 감시를 통해 신규 매물이 뜨면 알림으로 알려드릴게요. 기존 매물을 다시 보시려면 '기존 매물 다시 보여줘'라고 입력하세요.)\n\n"
     else:
         msg += "💡 (아직 보여드리지 않은 추가 매물이 더 있습니다. 다른 매물을 원하시면 '다른 매물 보여줘'라고 입력하세요!)\n\n"
