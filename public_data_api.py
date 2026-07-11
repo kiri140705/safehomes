@@ -881,8 +881,11 @@ class PublicDataFetcher:
         import requests
         import re
         
-        def parse_price_to_manwon(p_str):
-            p_str = p_str.split('/')[0].replace(' ', '')
+        def parse_price_to_manwon(p_str, trade_type=""):
+            if "월세" in trade_type and "/" in p_str:
+                p_str = p_str.split('/')[-1].replace(' ', '')
+            else:
+                p_str = p_str.split('/')[0].replace(' ', '')
             val = 0
             eok = re.search(r'(\d+)억', p_str)
             if eok:
@@ -1018,7 +1021,7 @@ class PublicDataFetcher:
                             if "월세" in interest_type and "월세" not in trade_type: continue
                             if "매매" in interest_type and "매매" not in trade_type: continue
                             
-                            price_val = parse_price_to_manwon(price)
+                            price_val = parse_price_to_manwon(price, trade_type)
                             if budget > 0:
                                 if price_val > 0:
                                     min_val = 0
@@ -1028,10 +1031,14 @@ class PublicDataFetcher:
                                     if min_val > 0 and price_val < min_val: continue
                                     
                                     upward_keywords = ["돌파", "넘으면", "상승", "오르면", "위로", "도달", "되면", "튀면"]
-                                    if min_val == 0 and any(k in interest_type for k in upward_keywords):
+                                    if "이하" in interest_type:
+                                        if price_val > budget: continue
+                                    elif "이상" in interest_type or (min_val == 0 and any(k in interest_type for k in upward_keywords)):
                                         if price_val < budget: continue
                                     else:
-                                        if price_val > budget: continue
+                                        lower_bound = budget * 0.8
+                                        upper_bound = budget * 1.2
+                                        if not (lower_bound <= price_val <= upper_bound): continue
                             
                             title = f"[{region}] {name} - ({area}㎡) (호가(검색노출가): {trade_type} {price}만 원)"
                             norm_name = re.sub(r'(아파트|빌라|오피스텔|\d+동|연식 미확인|\([^)]*\)|\s)', '', name)
@@ -1083,8 +1090,6 @@ class PublicDataFetcher:
                     elif "전세" in interest_type: basic_query += " 전세"
                     elif "월세" in interest_type: basic_query += " 월세"
                     
-                    pyeong_match = re.search(r'(\d+)평', interest_type)
-                    if pyeong_match: basic_query += f" {pyeong_match.group(1)}평"
                     daum_queries.append(basic_query)
                 
                 headers = {"User-Agent": "Mozilla/5.0"}
@@ -1143,7 +1148,7 @@ class PublicDataFetcher:
                                     if "월세" in interest_type and "월세" not in trade_type: continue
                                     if "매매" in interest_type and "매매" not in trade_type: continue
                                 
-                                    price_val = parse_price_to_manwon(price)
+                                    price_val = parse_price_to_manwon(price, trade_type)
                                     if budget > 0:
                                         if price_val > 0:
                                             min_val = 0
@@ -1153,10 +1158,14 @@ class PublicDataFetcher:
                                             if min_val > 0 and price_val < min_val: continue
                                         
                                             upward_keywords = ["돌파", "넘으면", "상승", "오르면", "위로", "도달", "되면", "튀면"]
-                                            if min_val == 0 and any(k in interest_type for k in upward_keywords):
+                                            if "이하" in interest_type:
+                                                if price_val > budget: continue
+                                            elif "이상" in interest_type or (min_val == 0 and any(k in interest_type for k in upward_keywords)):
                                                 if price_val < budget: continue
                                             else:
-                                                if price_val > budget: continue
+                                                lower_bound = budget * 0.8
+                                                upper_bound = budget * 1.2
+                                                if not (lower_bound <= price_val <= upper_bound): continue
                                 
                                     year = "연식 미확인"
                                     try:
@@ -1539,11 +1548,11 @@ class PublicDataFetcher:
                 "address": search_address, "refine": "true", "simple": "false", "format": "json", "type": "road",
                 "key": self.vworld_api_key
             }
-            res = requests.get(vworld_url, params=vworld_params, timeout=3)
+            res = requests.get(vworld_url, params=vworld_params, timeout=5)
             data = res.json()
             if data.get("response", {}).get("status") != "OK":
                 vworld_params["type"] = "parcel"
-                res = requests.get(vworld_url, params=vworld_params, timeout=3)
+                res = requests.get(vworld_url, params=vworld_params, timeout=5)
                 data = res.json()
                 
             if data.get("response", {}).get("status") == "OK":
@@ -1559,7 +1568,7 @@ class PublicDataFetcher:
                     params_stores["indsLclsCd"] = inds_cd
                 
                 params_stores["numOfRows"] = 1000
-                res_stores = requests.get(url_stores, params=params_stores, timeout=3)
+                res_stores = requests.get(url_stores, params=params_stores, timeout=8)
                 stores_data = res_stores.json()
                 
                 meat_keywords = ["소고기", "고기", "고깃", "삼겹", "한우", "곱창", "막창", "대패", "냉삼", "갈매기", "갈비", "육류"]
@@ -1648,7 +1657,7 @@ class PublicDataFetcher:
                 region_multiplier = 1.4
                 region_name = "홍대/합정"
                 target_demographic = "20대 남녀 (대학생/데이트 소비 압도적 비율)"
-                if competitors < 50: competitors = 150 # API 오류 방지 강제 보정
+                if competitors < 50: competitors = 65 # API 오류 방지 강제 보정
             elif any(k in address for k in ["여의도", "종로", "광화문", "을지로"]):
                 region_multiplier = 1.6
                 region_name = "도심 오피스"

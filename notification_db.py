@@ -29,15 +29,35 @@ def init_db():
     conn.close()
 
 def register_user_alert(user_id, region, budget, interest_type):
-    # 신규 등록은 덮어쓰지 않고 항상 새로운 알림(row)으로 추가(INSERT)합니다.
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
+    # 공백으로 인한 중복 방지
+    if isinstance(user_id, str): user_id = user_id.strip()
+    if isinstance(region, str): region = region.strip()
+    if isinstance(interest_type, str): interest_type = interest_type.strip()
+    try:
+        budget = int(budget)
+    except:
+        budget = 0
+        
+    # 중복 확인 (이미 존재하는지 SELECT)
     cursor.execute('''
-        INSERT INTO user_alerts (user_id, target_region, target_budget, interest_type)
-        VALUES (?, ?, ?, ?)
+        SELECT alert_id FROM user_alerts 
+        WHERE user_id=? AND target_region=? AND target_budget=? AND interest_type=?
     ''', (user_id, region, budget, interest_type))
-    alert_id = cursor.lastrowid
-    conn.commit()
+    existing = cursor.fetchone()
+    
+    if existing:
+        alert_id = existing[0]
+    else:
+        cursor.execute('''
+            INSERT INTO user_alerts (user_id, target_region, target_budget, interest_type)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, region, budget, interest_type))
+        alert_id = cursor.lastrowid
+        conn.commit()
+        
     conn.close()
     return alert_id
 
