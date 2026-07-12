@@ -605,7 +605,7 @@ def register_notification(
         if is_rtms:
             display_limit = len(notices)
         else:
-            display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3
+            display_limit = 6
         
         # 유저명 대신 alert_id 단위로 커서를 독립적으로 보관하여 혼선을 막음
         USER_UI_CURSOR[str(alert_id)] = min(display_limit, len(notices))
@@ -892,7 +892,7 @@ def get_more_listings(
     if is_rtms:
         display_limit = len(notices)
     else:
-        display_limit = 10 if any(k in interest_type for k in ["공공임대", "LH", "SH", "공실"]) else 3
+        display_limit = 3
     
     from notification_db import is_notice_sent, mark_notice_sent
     
