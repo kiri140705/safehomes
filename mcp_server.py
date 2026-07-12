@@ -910,11 +910,25 @@ def get_more_listings(
                 if not is_notice_sent(user_id, n["id"]):
                     filtered_notices.append(n)
                     
-    if not filtered_notices and notices:
+    # 자동으로 다음 동네(페이지)를 탐색하여 중복 매물을 건너뛰는 로직
+    retry_count = 0
+    while not filtered_notices and notices and retry_count < 3 and not reset and not is_public_housing_only:
+        current_offset += 3
+        retry_tasks = []
+        if any(k in interest_type for k in ["아파트", "빌라", "전세", "월세", "매매", "상가", "네이버", "평"]) and not is_public_housing_only and not is_rtms:
+            retry_tasks.append((public_fetcher.fetch_naver_real_estate, (region, budget, interest_type, current_offset)))
+            notices = fetch_all_parallel(retry_tasks, global_timeout=60.0)
+            filtered_notices = []
+            for n in notices:
+                if not is_notice_sent(user_id, n["id"]):
+                    filtered_notices.append(n)
+        retry_count += 1
+                    
+    if not filtered_notices:
         USER_UI_CURSOR[str(alert_id)] = current_offset + 3
         return json.dumps({
             "status": "SUCCESS",
-            "message": f"현재 화면의 매물을 모두 확인하셨습니다. 다음 동네(또는 다음 페이지)로 이동하시려면 '다른 매물 보여줘'를 한 번 더 입력해주세요!\n(기존 매물을 다시 보시려면 '기존 매물 다시 보여줘'라고 입력해주세요.)",
+            "message": f"현재 동네 인근까지 깊게 탐색해보았으나, 고객님의 조건(평수, 예산 등)에 딱 맞는 새로운 매물이 더 이상 없습니다.\n\n💡 (조건을 조금 완화하거나 지역을 넓혀서 새로 검색해보시는 것을 추천합니다! 기존 매물을 다시 보시려면 '기존 매물 다시 보여줘'를 입력해주세요.)",
             "system_instruction_for_llm": PARROT_INSTRUCTION
         }, ensure_ascii=False)
         
