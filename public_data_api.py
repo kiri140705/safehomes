@@ -1136,6 +1136,8 @@ class PublicDataFetcher:
                         for a in soup_daum.find_all('a', href=True):
                             href = a['href']
                             if ('m.zigbang.com/home' in href or 'realty.daum.net' in href) and href not in seen_hrefs:
+                                if 'danjis' in href or 'items' not in href:
+                                    continue
                                 seen_hrefs.add(href)
                                 text = a.text.strip()
                                 if "매매" in text or "전세" in text or "월세" in text:

@@ -896,16 +896,20 @@ def get_more_listings(
     
     from notification_db import is_notice_sent, mark_notice_sent
     
-    # 중복 제거 (이미 본 매물 필터링)
+    # 중복 제거 및 페이지네이션
     filtered_notices = []
     if reset:
         filtered_notices = notices
         USER_UI_CURSOR[str(alert_id)] = 0
+        current_offset = 0
     else:
-        for n in notices:
-            if not is_notice_sent(user_id, n["id"]):
-                filtered_notices.append(n)
-                
+        if is_public_housing_only:
+            filtered_notices = notices[current_offset:]
+        else:
+            for n in notices:
+                if not is_notice_sent(user_id, n["id"]):
+                    filtered_notices.append(n)
+                    
     if not filtered_notices and notices:
         USER_UI_CURSOR[str(alert_id)] = current_offset + 3
         return json.dumps({
@@ -916,8 +920,11 @@ def get_more_listings(
         
     next_items = filtered_notices[:display_limit]
     
-    # 롤링 검색을 위해 offset 항상 3 증가
-    USER_UI_CURSOR[str(alert_id)] = current_offset + 3
+    # 롤링 검색을 위해 offset 항상 3 증가 (공공임대는 출력된 개수만큼 증가)
+    if is_public_housing_only:
+        USER_UI_CURSOR[str(alert_id)] = current_offset + len(next_items)
+    else:
+        USER_UI_CURSOR[str(alert_id)] = current_offset + 3
     
     # 새로 보여줄 매물만 sent 처리
     for n in next_items:
@@ -930,7 +937,7 @@ def get_more_listings(
     for idx, n in enumerate(next_items, 1):
         url_str = n.get('url', n.get('link', ''))
         if url_str:
-            msg += f"[{offset + idx}] {n['title']}\n👉 바로가기 주소: {url_str}\n\n"
+            msg += f"[{current_offset + idx}] {n['title']}\n👉 바로가기 주소: {url_str}\n\n"
         else:
             msg += f"- {n['title']}\n"
         
