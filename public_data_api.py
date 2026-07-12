@@ -19,7 +19,7 @@ class PublicDataFetcher:
         import requests
         for attempt in range(3):
             try:
-                response = requests.get(url, params=params, timeout=15)
+                response = requests.get(url, params=params, timeout=5)
                 response.raise_for_status()
                 return response.text
             except Exception as e:
@@ -876,6 +876,8 @@ class PublicDataFetcher:
 
     def fetch_naver_real_estate(self, region: str, budget: int, interest_type: str = "", offset: int = 0):
         """네이버 부동산 실시간 크롤링 (빠른 버전 + 핀셋 필터링)"""
+        import time
+        start_time = time.time()
         import urllib.parse
         from bs4 import BeautifulSoup
         import requests
@@ -952,7 +954,17 @@ class PublicDataFetcher:
                 idx = (page * 3) % len(found)
                 dongs_to_search = found[idx : idx + 3]
             else:
-                dongs_to_search = [""]
+                if region == "홍대/합정":
+                    found = ["서교동", "합정동", "동교동", "연남동", "상수동"]
+                elif "/" in region or "," in region:
+                    found = [r.strip() for r in re.split(r'[/,]', region) if r.strip()]
+                
+                if found:
+                    page = offset // 3
+                    idx = (page * 3) % len(found)
+                    dongs_to_search = found[idx : idx + 3]
+                else:
+                    dongs_to_search = [""]
         
         queries_to_try = []
         original_query = clean_interest if region in clean_interest else f"{region} {clean_interest}"
@@ -960,7 +972,10 @@ class PublicDataFetcher:
         
         if region and target_trade:
             for d in dongs_to_search:
-                region_query = f"{region} {d}".strip() if not d.startswith(region) else d
+                if (region == "홍대/합정" or "/" in region or "," in region) and d:
+                    region_query = d
+                else:
+                    region_query = f"{region} {d}".strip() if not d.startswith(region) else d
                 
                 if property_type:
                     queries_to_try.append(f"{region_query} {property_type} {target_trade}")
@@ -981,7 +996,7 @@ class PublicDataFetcher:
             if len(notices) >= 45: break
             url = f"https://search.naver.com/search.naver?query={urllib.parse.quote(q)}"
             try:
-                res = requests.get(url, headers=headers, timeout=2)
+                res = requests.get(url, headers=headers, timeout=5)
                 if res.status_code == 200:
                     soup = BeautifulSoup(res.text, 'html.parser')
                     
@@ -996,8 +1011,16 @@ class PublicDataFetcher:
                             a_tag = row.find('a')
                             trade_type = parts[0]
                             name = parts[2]
-                            area = parts[4]
-                            price = parts[5]
+                            area = ""
+                            price = ""
+                            for i, p in enumerate(parts):
+                                if re.search(r'\d+/\d+', p):
+                                    area = p
+                                    if i + 1 < len(parts):
+                                        price = parts[i+1]
+                                    break
+                            
+                            if not area or not price: continue
                             
                             link = a_tag['href'] if a_tag else f"{url}#{name}_{area}_{price}"
                             if link.startswith('/'): link = "https://search.naver.com" + link
@@ -1179,7 +1202,7 @@ class PublicDataFetcher:
                                         item_id_match = re.search(r'/items/(\d+)', href)
                                         if item_id_match:
                                             z_item_id = item_id_match.group(1)
-                                            z_res = requests.get(f"https://apis.zigbang.com/v3/items/{z_item_id}", headers=headers, timeout=2)
+                                            z_res = requests.get(f"https://apis.zigbang.com/v3/items/{z_item_id}", headers=headers, timeout=0.5)
                                             if z_res.status_code == 200:
                                                 z_data = z_res.json()
                                                 approve_date = str(z_data.get("item", {}).get("approveDate", ""))
@@ -1192,11 +1215,11 @@ class PublicDataFetcher:
                                         z_year_match = re.search(r'(\d{4})년식', interest_type)
                                         if z_year_match:
                                             z_target_year = int(z_year_match.group(1))
-                                        z_actual_year = int(year[:4])
-                                        if "이하" in interest_type or "이전" in interest_type:
-                                            if z_actual_year > z_target_year: continue
-                                        else:
-                                            if z_actual_year < z_target_year: continue
+                                            z_actual_year = int(year[:4])
+                                            if "이하" in interest_type or "이전" in interest_type:
+                                                if z_actual_year > z_target_year: continue
+                                            else:
+                                                if z_actual_year < z_target_year: continue
                                             
                                 # 연식을 강제로 붙여서 거짓말하는 로직 제거 (실제 확인된 연식만 출력)
                                 title_year_str = f"({year}) " if year != "연식 미확인" else ""
@@ -1253,7 +1276,7 @@ class PublicDataFetcher:
                     try:
                         q = urllib.parse.quote(cname)
                         url = f'https://m.search.daum.net/search?w=tot&q={q}'
-                        res = requests.get(url, headers=headers, timeout=2)
+                        res = requests.get(url, headers=headers, timeout=1.0)
                         soup = BeautifulSoup(res.text, 'html.parser')
                         for dl in soup.find_all('dl'):
                             if '입주' in dl.text or '세대' in dl.text:
@@ -1266,7 +1289,7 @@ class PublicDataFetcher:
                     try:
                         q = urllib.parse.quote(cname)
                         url = f'https://search.naver.com/search.naver?query={q}'
-                        res = requests.get(url, headers=headers, timeout=2)
+                        res = requests.get(url, headers=headers, timeout=5)
                         soup = BeautifulSoup(res.text, 'html.parser')
                         match = re.search(r'(\d{4})\.\d+\.\s*(준공|입주|사용승인)', soup.text)
                         if match: return int(match.group(1))
@@ -1308,15 +1331,19 @@ class PublicDataFetcher:
                 
             notices = filtered_notices
             
-        # 네이버 부동산 1순위, 직방 2순위 정렬 후 가격순
-        def sort_priority(x):
-            price = x.get("price_val", 999999999)
-            priority = 0 if "네이버" in x.get("date", "") else 1
-            return (priority, price)
-            
-        notices.sort(key=sort_priority)
-
-        return notices
+        naver_list = [n for n in notices if "네이버" in n.get("date", "")]
+        zigbang_list = [n for n in notices if "네이버" not in n.get("date", "")]
+        
+        naver_list.sort(key=lambda x: x.get("price_val", 999999999))
+        zigbang_list.sort(key=lambda x: x.get("price_val", 999999999))
+        
+        reordered = []
+        reordered.extend(naver_list[:3])
+        reordered.extend(zigbang_list[:3])
+        reordered.extend(naver_list[3:])
+        reordered.extend(zigbang_list[3:])
+        
+        return reordered
 
     def fetch_general_sales_notices(self, address: str):
         """한국부동산원 청약홈(일반분양) 실시간 공고 연동"""
@@ -1838,7 +1865,7 @@ class PublicDataFetcher:
         }
         
         try:
-            response = requests.get(url, params=params, timeout=3)
+            response = requests.get(url, params=params, timeout=5)
             response.raise_for_status()
             root = ET.fromstring(response.text)
             
@@ -2086,7 +2113,7 @@ class PublicDataFetcher:
             
             # 429 에러(Rate limit) 혹은 데이터 없으면 프록시 가동
             if res.status_code != 200 or not res.json().get('complexes'):
-                res = requests.get(proxy_url, timeout=15)
+                res = requests.get(proxy_url, timeout=5)
                 
             data = res.json()
             complexes = data.get('complexes', [])
@@ -2101,7 +2128,7 @@ class PublicDataFetcher:
             
             res2 = requests.get(type_url, headers=headers, timeout=5)
             if res2.status_code != 200:
-                res2 = requests.get(proxy_type_url, timeout=15)
+                res2 = requests.get(proxy_type_url, timeout=5)
                 
             c_data = res2.json()
             ptp_list = c_data.get('complexPyeongDetailList', [])
@@ -2133,10 +2160,10 @@ class PublicDataFetcher:
                 
                 rtms_url = f"https://new.land.naver.com/api/complexes/{c_id}/prices/real?complexNo={c_id}&tradeType={trade_type}&year={current_year}&ptpNo={ptp_no}&priceChartChange=false"
                 try:
-                    res3 = requests.get(rtms_url, headers=headers, timeout=3)
+                    res3 = requests.get(rtms_url, headers=headers, timeout=5)
                     if res3.status_code != 200:
                         proxy_rtms = f"http://api.scraperapi.com?api_key=70a0096cc7a0082f42a543ec682e22c0&url={urllib.parse.quote(rtms_url)}"
-                        res3 = requests.get(proxy_rtms, timeout=15)
+                        res3 = requests.get(proxy_rtms, timeout=5)
                         if res3.status_code != 200: return None
                         
                     r_data = res3.json()
@@ -2144,10 +2171,10 @@ class PublicDataFetcher:
                     
                     if not real_prices:
                         rtms_url = f"https://new.land.naver.com/api/complexes/{c_id}/prices/real?complexNo={c_id}&tradeType={trade_type}&year={current_year-1}&ptpNo={ptp_no}&priceChartChange=false"
-                        res3 = requests.get(rtms_url, headers=headers, timeout=3)
+                        res3 = requests.get(rtms_url, headers=headers, timeout=5)
                         if res3.status_code != 200:
                             proxy_rtms = f"http://api.scraperapi.com?api_key=70a0096cc7a0082f42a543ec682e22c0&url={urllib.parse.quote(rtms_url)}"
-                            res3 = requests.get(proxy_rtms, timeout=15)
+                            res3 = requests.get(proxy_rtms, timeout=5)
                             if res3.status_code != 200: return None
                             
                         r_data = res3.json()
