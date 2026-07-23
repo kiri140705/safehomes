@@ -1,0 +1,38 @@
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local Database
+*.db
+*.sqlite
+*.sqlite3
+safehomes_notifications.db
+
+# Debug and Test Logs
+debug.py
+test_*.py
+*.log
+*.txt
+*.json
+*.html
+dump.html
+live_output.txt
+live_response.txt
+test_output*.json
+test_output_text*.txt
+gift_html.txt
+
+# Virtual Environments
+venv/
+env/
+.venv/
+
+# Environment Variables
+.env
+.env.local
+
+# OS Generated
+.DS_Store
+Thumbs.db

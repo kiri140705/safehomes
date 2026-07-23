@@ -1,0 +1,31 @@
+# 절대 이미지에 포함되면 안 되는 비밀 정보
+.env
+.env.local
+
+# 로컬 개발/디버깅용 잡동사니 (배포 이미지에 불필요)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite
+*.sqlite3
+*.log
+debug_*.py
+patch_*.py
+test_*.py
+fix_*.py
+run_test*.py
+dump*.py
+dump*.html
+*_out.txt
+*_out*.json
+대화_백업본/
+대화_백업본.txt
+세이프홈즈*.txt
+*.html
+
+# 버전관리/에디터
+.git/
+.gitignore
+.vscode/
